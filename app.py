@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ---------- تنظیمات ----------
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_TOKEN = os.environ["8225223005:AAF21vF7aRFPRcYpEIEbAzmug2MSo39VkhI"]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -274,4 +274,5 @@ def health():
 async def set_webhook(request: Request):
     base_url = str(request.base_url).rstrip("/")
     await application.bot.set_webhook(url=f"{base_url}/webhook/{BOT_TOKEN}")
+
     return {"status": "set", "webhook": f"{base_url}/webhook/{BOT_TOKEN}"}

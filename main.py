@@ -81,14 +81,13 @@ def get_form(update: Update, context: CallbackContext):
 def get_sticker(update: Update, context: CallbackContext):
     uid = update.effective_user.id
     if update.message.sticker:
-        sticker = update.message.sticker
+        user_data[uid]['sticker'] = update.message.sticker.file_id
     elif update.message.photo:
-        sticker = update.message.photo[-1]
+        user_data[uid]['sticker'] = update.message.photo[-1].file_id
     else:
         update.message.reply_text("⚠️ لطفاً استیکر یا عکس ارسال کنید.")
         return STICKER
     
-    user_data[uid]['sticker'] = sticker.file_id
     update.message.reply_text("🎼 لطفاً آهنگ مورد علاقتون رو ارسال کنید.")
     return SONG
 
@@ -170,14 +169,14 @@ async def webhook(request: Request):
 async def on_startup():
     # راه‌اندازی وب‌هوک
     webhook_url = "https://eclis-registery-bot.onrender.com/webhook"
-    await updater.bot.set_webhook(webhook_url)
+    updater.bot.set_webhook(webhook_url)
     logger.info("✅ Bot started with webhook!")
 
 @fastapi_app.get("/")
 async def root():
     return {"status": "Bot is running!"}
 
+# برای اجرای محلی
 if __name__ == "__main__":
-    # برای اجرای محلی
     updater.start_polling()
     updater.idle()

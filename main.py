@@ -1,28 +1,31 @@
 import os
+import logging
 from fastapi import FastAPI, Request
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ConversationHandler,
-    ContextTypes, filters
+    Updater, CommandHandler, MessageHandler, ConversationHandler,
+    Filters, CallbackContext
 )
+
+# تنظیمات لاگ
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ===========================
 # تنظیمات اولیه
 # ===========================
 TOKEN = os.getenv("BOT_TOKEN", "7616763801:AAHq3vnFyrZAOAz9ILAVpn_w5lpEMWhZc88")
-GROUP_ID = -1002511380813  # گروه شناسنامه‌ها
+GROUP_ID = -1002511380813
 
-# Webhook تنظیم
-WEBHOOK_URL = "https://eclis-registery-bot.onrender.com/webhook"
+# وضعیت گفتگو
+FORM, STICKER, SONG, COVER = range(4)
+user_data = {}
 
 # FastAPI app
 fastapi_app = FastAPI()
-
-# ===========================
-# وضعیت گفتگو
-# ===========================
-FORM, STICKER, SONG, COVER = range(4)
-user_data = {}
 
 # ===========================
 # توابع کمکی
@@ -49,18 +52,18 @@ def format_form(form_text: str, username: str) -> str:
 # ===========================
 # هندلرها
 # ===========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update: Update, context: CallbackContext):
     keyboard = [[KeyboardButton("📄 ساخت شناسنامه")], [KeyboardButton("🏦 ورود به بانک")]]
     markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
+    update.message.reply_text(
         "✨ خوش اومدین!\n"
         "من درویدم، دستیار شما توی سرزمین اکلیس.\n\n"
         "برای شروع یکی از دکمه‌های پایین رو انتخاب کنید:",
         reply_markup=markup
     )
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def handle_button(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🪶 لطفاً فرم زیر رو کپی کرده و پر کنید:\n\n"
         "🪶اسم و اسم خاندان:\n"
         "🪶نژاد:\n"
@@ -70,50 +73,84 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return FORM
 
-async def get_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_form(update: Update, context: CallbackContext):
     user_data[update.effective_user.id] = {'form': update.message.text}
-    await update.message.reply_text("🌀 لطفاً استیکر رولتون یا عکس واضح از کرکترتون رو ارسال کنید.")
+    update.message.reply_text("🌀 لطفاً استیکر رولتون یا عکس واضح از کرکترتون رو ارسال کنید.")
     return STICKER
 
-async def get_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_sticker(update: Update, context: CallbackContext):
     uid = update.effective_user.id
     if update.message.sticker:
         sticker = update.message.sticker
     elif update.message.photo:
         sticker = update.message.photo[-1]
     else:
-        await update.message.reply_text("⚠️ لطفاً استیکر یا عکس ارسال کنید.")
+        update.message.reply_text("⚠️ لطفاً استیکر یا عکس ارسال کنید.")
         return STICKER
     
     user_data[uid]['sticker'] = sticker.file_id
-    await update.message.reply_text("🎼 لطفاً آهنگ مورد علاقتون رو ارسال کنید.")
+    update.message.reply_text("🎼 لطفاً آهنگ مورد علاقتون رو ارسال کنید.")
     return SONG
 
-async def get_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_song(update: Update, context: CallbackContext):
     uid = update.effective_user.id
     if update.message.audio:
         user_data[uid]['song'] = update.message.audio.file_id
-        await update.message.reply_text("🎨 لطفاً کاور آهنگ رو ارسال کنید.")
+        update.message.reply_text("🎨 لطفاً کاور آهنگ رو ارسال کنید.")
         return COVER
     else:
-        await update.message.reply_text("⚠️ لطفاً فایل صوتی واقعی بفرستید.")
+        update.message.reply_text("⚠️ لطفاً فایل صوتی واقعی بفرستید.")
         return SONG
 
-async def get_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_cover(update: Update, context: CallbackContext):
     uid = update.effective_user.id
     if update.message.photo:
         user_data[uid]['cover'] = update.message.photo[-1].file_id
     else:
-        await update.message.reply_text("⚠️ لطفاً عکس ارسال کنید.")
+        update.message.reply_text("⚠️ لطفاً عکس ارسال کنید.")
         return COVER
         
     form = user_data[uid]['form']
     formatted = format_form(form, update.effective_user.username)
 
-    await context.bot.send_message(chat_id=GROUP_ID, text="📜 شناسنامه جدید ارسال شد:")
-    await context.bot.send_message(chat_id=GROUP_ID, text=formatted)
-    await update.message.reply_text("✅ اطلاعات شما با موفقیت ارسال شد! منتظر تأیید باشید.")
+    context.bot.send_message(chat_id=GROUP_ID, text="📜 شناسنامه جدید ارسال شد:")
+    context.bot.send_message(chat_id=GROUP_ID, text=formatted)
+    update.message.reply_text("✅ اطلاعات شما با موفقیت ارسال شد! منتظر تأیید باشید.")
+    
+    # پاک کردن داده کاربر
+    if uid in user_data:
+        del user_data[uid]
+        
     return ConversationHandler.END
+
+def cancel(update: Update, context: CallbackContext):
+    uid = update.effective_user.id
+    if uid in user_data:
+        del user_data[uid]
+    update.message.reply_text("❌ عملیات لغو شد.")
+    return ConversationHandler.END
+
+# ===========================
+# راه‌اندازی بات
+# ===========================
+# ساخت updater
+updater = Updater(TOKEN, use_context=True)
+dp = updater.dispatcher
+
+# Conversation Handler
+conv_handler = ConversationHandler(
+    entry_points=[MessageHandler(Filters.regex('^(📄 ساخت شناسنامه)$'), handle_button)],
+    states={
+        FORM: [MessageHandler(Filters.text & ~Filters.command, get_form)],
+        STICKER: [MessageHandler(Filters.sticker | Filters.photo, get_sticker)],
+        SONG: [MessageHandler(Filters.audio, get_song)],
+        COVER: [MessageHandler(Filters.photo, get_cover)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)]
+)
+
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(conv_handler)
 
 # ===========================
 # FastAPI webhook endpoint
@@ -122,40 +159,25 @@ async def get_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def webhook(request: Request):
     try:
         data = await request.json()
-        update = Update.de_json(data, app.bot)
-        await app.update_queue.put(update)
+        update = Update.de_json(data, updater.bot)
+        dp.process_update(update)
         return {"ok": True}
     except Exception as e:
-        print(f"Error in webhook: {e}")
+        logger.error(f"Error in webhook: {e}")
         return {"ok": False}
 
-# ===========================
-# راه‌اندازی بات
-# ===========================
-app = Application.builder().token(TOKEN).build()
-
-conv_handler = ConversationHandler(
-    entry_points=[MessageHandler(filters.Regex("^(📄 ساخت شناسنامه)$"), handle_button)],
-    states={
-        FORM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_form)],
-        STICKER: [MessageHandler(filters.ALL, get_sticker)],
-        SONG: [MessageHandler(filters.AUDIO | filters.VOICE, get_song)],
-        COVER: [MessageHandler(filters.PHOTO, get_cover)],
-    },
-    fallbacks=[],
-)
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(conv_handler)
-
-# ===========================
-# شروع در Render
-# ===========================
 @fastapi_app.on_event("startup")
 async def on_startup():
-    await app.bot.set_webhook(WEBHOOK_URL)
-    print("✅ Webhook set and bot ready!")
+    # راه‌اندازی وب‌هوک
+    webhook_url = "https://eclis-registery-bot.onrender.com/webhook"
+    await updater.bot.set_webhook(webhook_url)
+    logger.info("✅ Bot started with webhook!")
+
+@fastapi_app.get("/")
+async def root():
+    return {"status": "Bot is running!"}
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8000)
+    # برای اجرای محلی
+    updater.start_polling()
+    updater.idle()

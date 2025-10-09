@@ -1,7 +1,6 @@
 const { Telegraf, Scenes: { WizardScene }, session, Markup } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
-const PQueue = require('p-queue').default;
 
 dotenv.config();
 
@@ -13,13 +12,49 @@ const GROUP_ID = -1002511380813; // گروه شناسنامه‌ها
 const PORT = process.env.PORT || 3000;
 
 // ===========================
-// ایجاد صف برای مدیریت کاربران همزمان
+// ایجاد صف ساده برای مدیریت کاربران همزمان
 // ===========================
-const messageQueue = new PQueue({
-  concurrency: 5, // ۵ کاربر همزمان
-  timeout: 30000, // ۳۰ ثانیه timeout
-  throwOnTimeout: true
-});
+class SimpleQueue {
+  constructor(concurrency = 5) {
+    this.concurrency = concurrency;
+    this.running = 0;
+    this.queue = [];
+  }
+
+  add(task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject });
+      this.next();
+    });
+  }
+
+  next() {
+    if (this.running >= this.concurrency || this.queue.length === 0) {
+      return;
+    }
+
+    this.running++;
+    const { task, resolve, reject } = this.queue.shift();
+
+    task()
+      .then(resolve)
+      .catch(reject)
+      .finally(() => {
+        this.running--;
+        this.next();
+      });
+  }
+
+  get size() {
+    return this.queue.length;
+  }
+
+  get pending() {
+    return this.running;
+  }
+}
+
+const messageQueue = new SimpleQueue(5); // ۵ کاربر همزمان
 
 // ===========================
 // ایجاد برنامه‌ها
@@ -348,8 +383,9 @@ expressApp.get('/', (req, res) => {
   res.json({ 
     status: 'Bot is running!',
     service: 'Eclis Registry Bot v2.0',
-    concurrentUsers: messageQueue.size,
-    activeUsers: userData.userData.size,
+    queueSize: messageQueue.size,
+    activeUsers: messageQueue.pending,
+    totalUsers: userData.userData.size,
     uptime: process.uptime()
   });
 });
@@ -359,7 +395,6 @@ expressApp.get('/queue-status', (req, res) => {
   res.json({
     pending: messageQueue.size,
     active: messageQueue.pending,
-    completed: messageQueue.completed,
     usersInQueue: userData.userData.size
   });
 });

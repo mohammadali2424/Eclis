@@ -1,7 +1,7 @@
 const { Telegraf, Scenes: { WizardScene }, session, Markup } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
-const PQueue = require('p-queue'); // اصلاح import - بدون .default
+const PQueue = require('p-queue'); // import ساده شده
 
 dotenv.config();
 

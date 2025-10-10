@@ -1,24 +1,28 @@
 const { Telegraf, Scenes: { WizardScene }, session, Markup } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
-const PQueue = require('p-queue').default;
+const PQueue = require('p-queue'); // اصلاح import
 
 dotenv.config();
 
 // ===========================
 // تنظیمات اولیه
 // ===========================
-const TOKEN = process.env.BOT_TOKEN || "7616763801:AAHq3vnFyrZAOAz9ILAVpn_w5lpEMWhZc88";
-const GROUP_ID = -1002511380813; // گروه شناسنامه‌ها
+const TOKEN = process.env.BOT_TOKEN;
+if (!TOKEN) {
+  console.error('❌ BOT_TOKEN is required in environment variables!');
+  process.exit(1);
+}
+const GROUP_ID = -1002511380813;
 const PORT = process.env.PORT || 3000;
 
 // ===========================
 // ایجاد صف برای مدیریت کاربران همزمان
 // ===========================
 const messageQueue = new PQueue({
-  concurrency: 5, // ۵ کاربر همزمان
-  timeout: 30000, // ۳۰ ثانیه timeout
-  throwOnTimeout: true
+  concurrency: 3, // کاهش برای پایداری بیشتر
+  timeout: 45000,
+  throwOnTimeout: false // جلوگیری از crash در صورت timeout
 });
 
 // ===========================
@@ -33,7 +37,7 @@ const expressApp = express();
 class UserDataManager {
   constructor() {
     this.userData = new Map();
-    this.cleanupInterval = setInterval(() => this.cleanup(), 30 * 60 * 1000); // هر ۳۰ دقیقه پاکسازی
+    this.cleanupInterval = setInterval(() => this.cleanup(), 30 * 60 * 1000);
   }
 
   set(userId, data) {
@@ -46,7 +50,7 @@ class UserDataManager {
   get(userId) {
     const data = this.userData.get(userId);
     if (data) {
-      data.timestamp = Date.now(); // به روزرسانی timestamp
+      data.timestamp = Date.now();
     }
     return data;
   }
@@ -55,9 +59,13 @@ class UserDataManager {
     return this.userData.delete(userId);
   }
 
+  exists(userId) {
+    return this.userData.has(userId);
+  }
+
   cleanup() {
     const now = Date.now();
-    const expiredTime = 60 * 60 * 1000; // ۱ ساعت
+    const expiredTime = 60 * 60 * 1000;
     
     for (const [userId, data] of this.userData.entries()) {
       if (now - data.timestamp > expiredTime) {
@@ -66,6 +74,11 @@ class UserDataManager {
       }
     }
   }
+
+  // اضافه کردن getter برای size
+  get size() {
+    return this.userData.size;
+  }
 }
 
 const userData = new UserDataManager();
@@ -73,6 +86,18 @@ const userData = new UserDataManager();
 // ===========================
 // توابع کمکی
 // ===========================
+function validateForm(formText) {
+  const requiredFields = [
+    "اسم و اسم خاندان:",
+    "نژاد:",
+    "تاریخ تولد به میلادی:",
+    "اسم پدر / مادر:",
+    "زیر کلاس:"
+  ];
+  
+  return requiredFields.every(field => formText.includes(field));
+}
+
 function formatForm(formText, username) {
   const lines = formText.trim().split('\n');
   const values = {
@@ -110,7 +135,6 @@ async function safeSendToGroup(ctx, content, media = null) {
         await ctx.telegram.sendMessage(GROUP_ID, content);
       }
       
-      // تاخیر برای رعایت rate limit تلگرام
       await new Promise(resolve => setTimeout(resolve, 500));
       return true;
     } catch (error) {
@@ -181,8 +205,14 @@ const registrationWizard = new WizardScene(
   // مرحله ۲: ذخیره فرم و دریافت استیکر/عکس
   async (ctx) => {
     try {
-      if (!ctx.message.text) {
+      if (!ctx.message || !ctx.message.text) {
         await ctx.reply("⚠️ لطفاً فقط متن فرم رو ارسال کنید.");
+        return;
+      }
+
+      // اعتبارسنجی فرم
+      if (!validateForm(ctx.message.text)) {
+        await ctx.reply("❌ فرم ارسالی ناقص است. لطفاً همه فیلدهای لازم رو پر کنید و دوباره تلاش کنید.");
         return;
       }
       
@@ -251,15 +281,16 @@ const registrationWizard = new WizardScene(
     }
   },
   
-  // مرحله ۵: دریافت کاور و ارسال نهایی
+  // مرحله ۵: دریافت کاور و ارسال نهایی - اینجا مشکل اصلی بود
   async (ctx) => {
+    let user;
     try {
       if (!ctx.message.photo || ctx.message.photo.length === 0) {
         await ctx.reply("⚠️ لطفاً عکس ارسال کنید.");
         return;
       }
       
-      const user = userData.get(ctx.from.id);
+      user = userData.get(ctx.from.id);
       if (!user) {
         await ctx.reply("⚠️ اطلاعات شما یافت نشد. لطفاً از /start شروع کنید.");
         return ctx.scene.leave();
@@ -270,52 +301,53 @@ const registrationWizard = new WizardScene(
       // فرمت‌بندی و ارسال نهایی
       const formatted = formatForm(user.form, ctx.from.username);
       
-      // ارسال به گروه با استفاده از صف
       await ctx.reply("⏳ در حال ارسال اطلاعات به گروه...");
       
-      // ارسال اطلاعات به گروه با مدیریت صف
-      await safeSendToGroup(ctx, "📜 شناسنامه جدید ارسال شد:");
-      await safeSendToGroup(ctx, formatted);
-      
-      if (user.sticker) {
-        await safeSendToGroup(ctx, null, {
-          type: user.mediaType,
-          fileId: user.sticker
-        });
+      // ارسال اطلاعات به گروه با مدیریت صف - با مدیریت خطای بهتر
+      try {
+        await safeSendToGroup(ctx, "📜 شناسنامه جدید ارسال شد:");
+        await safeSendToGroup(ctx, formatted);
+        
+        if (user.sticker) {
+          await safeSendToGroup(ctx, null, {
+            type: user.mediaType,
+            fileId: user.sticker
+          });
+        }
+        
+        if (user.song && user.cover) {
+          await safeSendToGroup(ctx, null, {
+            type: 'audio',
+            fileId: user.song,
+            thumb: user.cover
+          });
+        }
+        
+        // فقط در صورت موفقیت تمام مراحل این پیام نمایش داده می‌شود
+        await ctx.reply("✅ اطلاعات شما با موفقیت ارسال شد! منتظر تأیید باشید.");
+        
+      } catch (sendError) {
+        console.error('Error sending to group:', sendError);
+        await ctx.reply("❌ خطایی در ارسال اطلاعات به گروه رخ داد. لطفاً دوباره تلاش کنید.");
+        return ctx.scene.leave();
       }
-      
-      if (user.song && user.cover) {
-        await safeSendToGroup(ctx, null, {
-          type: 'audio',
-          fileId: user.song,
-          thumb: user.cover
-        });
-      }
-      
-      await ctx.reply("✅ اطلاعات شما با موفقیت ارسال شد! منتظر تأیید باشید.");
       
     } catch (error) {
       console.error('Error in final step:', error);
-      await ctx.reply("❌ خطایی در ارسال اطلاعات رخ داد. لطفاً دوباره تلاش کنید.");
+      await ctx.reply("❌ خطای غیرمنتظره‌ای رخ داد. لطفاً دوباره تلاش کنید.");
     } finally {
-      // پاک کردن داده‌های کاربر بدون توجه به موفقیت یا شکست
-      userData.delete(ctx.from.id);
+      // پاک کردن داده‌های کاربر در هر صورت
+      if (ctx.from && ctx.from.id) {
+        userData.delete(ctx.from.id);
+      }
       return ctx.scene.leave();
     }
   }
 );
 
-// ===========================
-// هندلر خطاهای全局
-// ===========================
-bot.catch(async (err, ctx) => {
-  console.error(`Error for ${ctx.updateType}:`, err);
-  try {
-    await ctx.reply("⚠️ خطای سیستمی پیش اومد. لطفاً دوباره تلاش کنید.");
-    userData.delete(ctx.from?.id);
-  } catch (e) {
-    console.error('Error in error handler:', e);
-  }
+// هندلر برای پیام‌های خارج از سن‌ها
+registrationWizard.on('message', async (ctx) => {
+  await ctx.reply("⚠️ لطفاً از دکمه‌ها استفاده کنید یا دستور /start رو بزنید.");
 });
 
 // ===========================
@@ -328,11 +360,25 @@ bot.use(session());
 bot.use(stage.middleware());
 
 // ===========================
+// هندلر خطاهای全局
+// ===========================
+bot.catch(async (err, ctx) => {
+  console.error(`Error for ${ctx.updateType}:`, err);
+  try {
+    await ctx.reply("⚠️ خطای سیستمی پیش اومد. لطفاً دوباره تلاش کنید.");
+    if (ctx.from?.id) {
+      userData.delete(ctx.from.id);
+    }
+  } catch (e) {
+    console.error('Error in error handler:', e);
+  }
+});
+
+// ===========================
 // راه‌اندازی وب‌سرور و وب‌هوک
 // ===========================
 expressApp.use(express.json());
 
-// مسیر وب‌هوک برای Render
 expressApp.post('/webhook', async (req, res) => {
   try {
     await bot.handleUpdate(req.body);
@@ -343,24 +389,22 @@ expressApp.post('/webhook', async (req, res) => {
   }
 });
 
-// مسیر سلامت برای Render
 expressApp.get('/', (req, res) => {
   res.json({ 
     status: 'Bot is running!',
-    service: 'Eclis Registry Bot v2.0',
+    service: 'Eclis Registry Bot v2.1',
     concurrentUsers: messageQueue.size,
-    activeUsers: userData.userData.size,
+    activeUsers: userData.size,
     uptime: process.uptime()
   });
 });
 
-// مسیر برای بررسی وضعیت صف
 expressApp.get('/queue-status', (req, res) => {
   res.json({
     pending: messageQueue.size,
     active: messageQueue.pending,
     completed: messageQueue.completed,
-    usersInQueue: userData.userData.size
+    usersInQueue: userData.size
   });
 });
 
@@ -369,7 +413,6 @@ expressApp.get('/queue-status', (req, res) => {
 // ===========================
 async function startBot() {
   try {
-    // در محیط production از وب‌هوک استفاده می‌کنیم
     if (process.env.NODE_ENV === 'production') {
       const WEBHOOK_URL = process.env.WEBHOOK_URL || "https://eclis-registery-bot.onrender.com/webhook";
       await bot.telegram.setWebhook(WEBHOOK_URL);
@@ -377,24 +420,22 @@ async function startBot() {
       
       expressApp.listen(PORT, () => {
         console.log(`🚀 Bot server running on port ${PORT}`);
-        console.log(`👥 Queue system ready - Max concurrent users: 5`);
+        console.log(`👥 Queue system ready - Max concurrent users: 3`);
         console.log(`📊 Monitoring available at /queue-status`);
       });
     } else {
-      // در محیط توسعه از polling استفاده می‌کنیم
       await bot.launch();
       console.log('🤖 Bot started with polling');
-      console.log(`👥 Queue system ready - Max concurrent users: 5`);
+      console.log(`👥 Queue system ready - Max concurrent users: 3`);
     }
     
-    console.log('✅ Eclis Registry Bot v2.0 is ready!');
+    console.log('✅ Eclis Registry Bot v2.1 is ready!');
   } catch (error) {
     console.error('❌ Error starting bot:', error);
     process.exit(1);
   }
 }
 
-// هندلرهای خروج تمیز
 process.once('SIGINT', () => {
   console.log('🛑 Shutting down gracefully...');
   bot.stop('SIGINT');
@@ -407,5 +448,4 @@ process.once('SIGTERM', () => {
   process.exit(0);
 });
 
-// شروع ربات
 startBot();

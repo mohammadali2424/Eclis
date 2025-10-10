@@ -1,7 +1,7 @@
 const { Telegraf, Scenes: { WizardScene }, session, Markup } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
-const PQueue = require('p-queue'); // اصلاح import
+const PQueue = require('p-queue'); // اصلاح import - بدون .default
 
 dotenv.config();
 
@@ -20,9 +20,9 @@ const PORT = process.env.PORT || 3000;
 // ایجاد صف برای مدیریت کاربران همزمان
 // ===========================
 const messageQueue = new PQueue({
-  concurrency: 3, // کاهش برای پایداری بیشتر
+  concurrency: 3,
   timeout: 45000,
-  throwOnTimeout: false // جلوگیری از crash در صورت timeout
+  throwOnTimeout: false
 });
 
 // ===========================
@@ -75,7 +75,6 @@ class UserDataManager {
     }
   }
 
-  // اضافه کردن getter برای size
   get size() {
     return this.userData.size;
   }
@@ -210,7 +209,6 @@ const registrationWizard = new WizardScene(
         return;
       }
 
-      // اعتبارسنجی فرم
       if (!validateForm(ctx.message.text)) {
         await ctx.reply("❌ فرم ارسالی ناقص است. لطفاً همه فیلدهای لازم رو پر کنید و دوباره تلاش کنید.");
         return;
@@ -281,7 +279,7 @@ const registrationWizard = new WizardScene(
     }
   },
   
-  // مرحله ۵: دریافت کاور و ارسال نهایی - اینجا مشکل اصلی بود
+  // مرحله ۵: دریافت کاور و ارسال نهایی
   async (ctx) => {
     let user;
     try {
@@ -298,12 +296,10 @@ const registrationWizard = new WizardScene(
       
       user.cover = ctx.message.photo[ctx.message.photo.length - 1].file_id;
       
-      // فرمت‌بندی و ارسال نهایی
       const formatted = formatForm(user.form, ctx.from.username);
       
       await ctx.reply("⏳ در حال ارسال اطلاعات به گروه...");
       
-      // ارسال اطلاعات به گروه با مدیریت صف - با مدیریت خطای بهتر
       try {
         await safeSendToGroup(ctx, "📜 شناسنامه جدید ارسال شد:");
         await safeSendToGroup(ctx, formatted);
@@ -323,7 +319,6 @@ const registrationWizard = new WizardScene(
           });
         }
         
-        // فقط در صورت موفقیت تمام مراحل این پیام نمایش داده می‌شود
         await ctx.reply("✅ اطلاعات شما با موفقیت ارسال شد! منتظر تأیید باشید.");
         
       } catch (sendError) {
@@ -336,7 +331,6 @@ const registrationWizard = new WizardScene(
       console.error('Error in final step:', error);
       await ctx.reply("❌ خطای غیرمنتظره‌ای رخ داد. لطفاً دوباره تلاش کنید.");
     } finally {
-      // پاک کردن داده‌های کاربر در هر صورت
       if (ctx.from && ctx.from.id) {
         userData.delete(ctx.from.id);
       }

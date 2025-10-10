@@ -6,29 +6,77 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 // ===========================
-// تنظیمات اولیه
+// Configuration
 // ===========================
-const TOKEN = process.env.BOT_TOKEN;
-if (!TOKEN) {
+const config = {
+  token: process.env.BOT_TOKEN,
+  groupId: -1002511380813,
+  port: process.env.PORT || 3000,
+  webhookUrl: process.env.WEBHOOK_URL || "https://eclis-registery-bot.onrender.com/webhook",
+  maxConcurrentUsers: 3,
+  sessionTimeout: 60 * 60 * 1000, // 1 hour
+  cleanupInterval: 30 * 60 * 1000 // 30 minutes
+};
+
+if (!config.token) {
   console.error('❌ BOT_TOKEN is required in environment variables!');
   process.exit(1);
 }
-const GROUP_ID = -1002511380813;
-const PORT = process.env.PORT || 3000;
 
 // ===========================
-// ایجاد صف ساده و پایدار برای مدیریت کاربران همزمان
+// Event Emitter for better event handling
 // ===========================
-class SimpleQueue {
+const EventEmitter = require('events');
+class BotEventEmitter extends EventEmitter {}
+const botEvents = new BotEventEmitter();
+
+// ===========================
+// Logger Service
+// ===========================
+class Logger {
+  static info(message, data = null) {
+    console.log(`ℹ️ ${new Date().toISOString()} - ${message}`, data || '');
+  }
+
+  static error(message, error = null) {
+    console.error(`❌ ${new Date().toISOString()} - ${message}`, error || '');
+  }
+
+  static warn(message, data = null) {
+    console.warn(`⚠️ ${new Date().toISOString()} - ${message}`, data || '');
+  }
+
+  static success(message, data = null) {
+    console.log(`✅ ${new Date().toISOString()} - ${message}`, data || '');
+  }
+}
+
+// ===========================
+// Queue Service
+// ===========================
+class MessageQueue {
   constructor(concurrency = 3) {
     this.concurrency = concurrency;
     this.active = 0;
     this.queue = [];
+    this.stats = {
+      processed: 0,
+      failed: 0,
+      total: 0
+    };
   }
 
-  add(task) {
+  async add(task, description = 'task') {
+    this.stats.total++;
+    
     return new Promise((resolve, reject) => {
-      this.queue.push({ task, resolve, reject });
+      this.queue.push({ 
+        task, 
+        resolve, 
+        reject, 
+        description,
+        timestamp: Date.now()
+      });
       this._next();
     });
   }
@@ -39,7 +87,7 @@ class SimpleQueue {
     }
 
     this.active++;
-    const { task, resolve, reject } = this.queue.shift();
+    const { task, resolve, reject, description } = this.queue.shift();
 
     const next = () => {
       this.active--;
@@ -48,61 +96,71 @@ class SimpleQueue {
 
     Promise.resolve(task())
       .then((result) => {
+        this.stats.processed++;
+        botEvents.emit('queue:success', { description });
         resolve(result);
         next();
       })
       .catch((error) => {
+        this.stats.failed++;
+        botEvents.emit('queue:error', { description, error });
         reject(error);
         next();
       });
   }
 
-  get size() {
-    return this.queue.length;
+  getStats() {
+    return {
+      pending: this.queue.length,
+      active: this.active,
+      ...this.stats
+    };
   }
 
-  get pending() {
-    return this.active;
-  }
-
-  get completed() {
-    return 0;
+  clear() {
+    this.queue = [];
+    this.active = 0;
   }
 }
 
-const messageQueue = new SimpleQueue(3);
-
 // ===========================
-// ایجاد برنامه‌ها
+// User Data Service
 // ===========================
-const bot = new Telegraf(TOKEN);
-const expressApp = express();
-
-// ===========================
-// ذخیره داده‌های کاربران با مدیریت بهتر
-// ===========================
-class UserDataManager {
+class UserDataService {
   constructor() {
     this.userData = new Map();
-    this.cleanupInterval = setInterval(() => this.cleanup(), 30 * 60 * 1000);
+    this.cleanupInterval = setInterval(() => this.cleanup(), config.cleanupInterval);
   }
 
   set(userId, data) {
-    this.userData.set(userId, {
+    const userData = {
       ...data,
-      timestamp: Date.now()
-    });
+      userId,
+      createdAt: data.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      lastActivity: Date.now()
+    };
+
+    this.userData.set(userId, userData);
+    botEvents.emit('user:updated', { userId, data: userData });
+    
+    return userData;
   }
 
   get(userId) {
     const data = this.userData.get(userId);
     if (data) {
-      data.timestamp = Date.now();
+      data.lastActivity = Date.now();
+      this.userData.set(userId, data);
     }
     return data;
   }
 
   delete(userId) {
+    const existed = this.userData.has(userId);
+    if (existed) {
+      botEvents.emit('user:deleted', { userId });
+    }
     return this.userData.delete(userId);
   }
 
@@ -110,453 +168,741 @@ class UserDataManager {
     return this.userData.has(userId);
   }
 
+  getAll() {
+    return Array.from(this.userData.entries());
+  }
+
   cleanup() {
     const now = Date.now();
-    const expiredTime = 60 * 60 * 1000;
-    
+    let cleanedCount = 0;
+
     for (const [userId, data] of this.userData.entries()) {
-      if (now - data.timestamp > expiredTime) {
+      if (now - data.lastActivity > config.sessionTimeout) {
         this.userData.delete(userId);
-        console.log(`Cleaned up expired user data: ${userId}`);
+        cleanedCount++;
+        Logger.info(`Cleaned up expired user session: ${userId}`);
       }
+    }
+
+    if (cleanedCount > 0) {
+      botEvents.emit('cleanup:completed', { cleanedCount });
     }
   }
 
-  get size() {
-    return this.userData.size;
+  getStats() {
+    return {
+      totalUsers: this.userData.size,
+      activeUsers: Array.from(this.userData.values()).filter(user => 
+        Date.now() - user.lastActivity < config.sessionTimeout
+      ).length
+    };
   }
 }
 
-const userData = new UserDataManager();
-
 // ===========================
-// توابع کمکی
+// Form Validation Service
 // ===========================
-function validateForm(formText) {
-  const lines = formText.trim().split('\n').filter(line => line.trim());
-  
-  const requiredFields = [
+class FormService {
+  static requiredFields = [
     "اسم و اسم خاندان:",
     "نژاد:",
     "تاریخ تولد به میلادی:",
     "اسم پدر / مادر:",
     "زیر کلاس:"
   ];
-  
-  return lines.length >= 5 && requiredFields.every(field => 
-    formText.includes(field)
-  );
-}
 
-function formatForm(formText, username) {
-  const lines = formText.trim().split('\n');
-  const values = {
-    name: lines[0]?.replace("اسم و اسم خاندان:", "").trim() || "نامشخص",
-    race: lines[1]?.replace("نژاد:", "").trim() || "نامشخص",
-    birth: lines[2]?.replace("تاریخ تولد به میلادی:", "").trim() || "نامشخص",
-    parents: lines[3]?.replace("اسم پدر / مادر:", "").trim() || "نامشخص",
-    subclass: lines[4]?.replace("زیر کلاس:", "").trim() || "نامشخص",
-  };
-  
-  return (
-    `👤 نام و خاندان: ${values['name']}\n` +
-    `🧬 نژاد: ${values['race']}\n` +
-    `📅 تاریخ تولد: ${values['birth']}\n` +
-    `👨‍👩‍👧 والدین: ${values['parents']}\n` +
-    `⚗️ زیرکلاس: ${values['subclass']}\n\n` +
-    `📨 ارسال‌شده توسط: @${username || 'بدون آیدی'}`
-  );
-}
-
-// تابع برای ارسال ایمن به گروه با صف
-async function safeSendToGroup(ctx, content, media = null) {
-  return messageQueue.add(async () => {
-    try {
-      if (media && media.type === 'sticker') {
-        await ctx.telegram.sendSticker(GROUP_ID, media.fileId);
-      } else if (media && media.type === 'photo') {
-        await ctx.telegram.sendPhoto(GROUP_ID, media.fileId);
-      } else if (media && media.type === 'audio') {
-        await ctx.telegram.sendAudio(GROUP_ID, media.fileId, {
-          thumb: media.thumb ? { source: media.thumb } : undefined
-        });
-      } else {
-        await ctx.telegram.sendMessage(GROUP_ID, content);
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
-      return true;
-    } catch (error) {
-      console.error('Error sending to group:', error);
-      throw error;
+  static validate(formText) {
+    if (!formText || typeof formText !== 'string') {
+      return { isValid: false, error: 'فرم باید متن باشد' };
     }
-  });
+
+    const lines = formText.trim().split('\n').filter(line => line.trim());
+    
+    if (lines.length < 5) {
+      return { isValid: false, error: 'فرم باید حداقل ۵ خط داشته باشد' };
+    }
+
+    const missingFields = this.requiredFields.filter(field => 
+      !formText.includes(field)
+    );
+
+    if (missingFields.length > 0) {
+      return { 
+        isValid: false, 
+        error: `فیلدهای زیر وجود ندارند: ${missingFields.join(', ')}` 
+      };
+    }
+
+    return { isValid: true };
+  }
+
+  static parse(formText) {
+    const lines = formText.trim().split('\n');
+    
+    const extractValue = (index, fieldName) => {
+      return lines[index]?.replace(fieldName, "").trim() || "نامشخص";
+    };
+
+    return {
+      name: extractValue(0, "اسم و اسم خاندان:"),
+      race: extractValue(1, "نژاد:"),
+      birth: extractValue(2, "تاریخ تولد به میلادی:"),
+      parents: extractValue(3, "اسم پدر / مادر:"),
+      subclass: extractValue(4, "زیر کلاس:"),
+      rawText: formText
+    };
+  }
+
+  static format(parsedData, username) {
+    return (
+      `👤 نام و خاندان: ${parsedData.name}\n` +
+      `🧬 نژاد: ${parsedData.race}\n` +
+      `📅 تاریخ تولد: ${parsedData.birth}\n` +
+      `👨‍👩‍👧 والدین: ${parsedData.parents}\n` +
+      `⚗️ زیرکلاس: ${parsedData.subclass}\n\n` +
+      `📨 ارسال‌شده توسط: @${username || 'بدون آیدی'}`
+    );
+  }
 }
 
 // ===========================
-// تعریف WizardScene برای ثبت‌نام
+// Media Service
+// ===========================
+class MediaService {
+  static extractMediaInfo(ctx) {
+    if (ctx.message.sticker) {
+      return {
+        type: 'sticker',
+        fileId: ctx.message.sticker.file_id,
+        fileUniqueId: ctx.message.sticker.file_unique_id
+      };
+    } else if (ctx.message.photo && ctx.message.photo.length > 0) {
+      return {
+        type: 'photo',
+        fileId: ctx.message.photo[ctx.message.photo.length - 1].file_id,
+        fileUniqueId: ctx.message.photo[ctx.message.photo.length - 1].file_unique_id
+      };
+    } else if (ctx.message.audio) {
+      return {
+        type: 'audio',
+        fileId: ctx.message.audio.file_id,
+        fileUniqueId: ctx.message.audio.file_unique_id,
+        duration: ctx.message.audio.duration,
+        title: ctx.message.audio.title,
+        performer: ctx.message.audio.performer
+      };
+    }
+    
+    return null;
+  }
+
+  static async sendMediaToGroup(ctx, mediaInfo, caption = null) {
+    try {
+      switch (mediaInfo.type) {
+        case 'sticker':
+          return await ctx.telegram.sendSticker(config.groupId, mediaInfo.fileId);
+        case 'photo':
+          return await ctx.telegram.sendPhoto(config.groupId, mediaInfo.fileId, {
+            caption: caption
+          });
+        case 'audio':
+          return await ctx.telegram.sendAudio(config.groupId, mediaInfo.fileId, {
+            caption: caption
+          });
+        default:
+          throw new Error(`نوع مدیا پشتیبانی نمی‌شود: ${mediaInfo.type}`);
+      }
+    } catch (error) {
+      Logger.error('Error sending media to group', error);
+      throw error;
+    }
+  }
+}
+
+// ===========================
+// Initialize Services
+// ===========================
+const messageQueue = new MessageQueue(config.maxConcurrentUsers);
+const userDataService = new UserDataService();
+
+// ===========================
+// Bot Instance
+// ===========================
+const bot = new Telegraf(config.token);
+const expressApp = express();
+
+// ===========================
+// Keyboard Templates
+// ===========================
+const Keyboards = {
+  main: Markup.keyboard([
+    ['📄 ساخت شناسنامه'],
+    ['🏦 ورود به بانک', 'ℹ️ راهنما']
+  ]).resize(),
+
+  cancel: Markup.keyboard([
+    ['❌ انصراف']
+  ]).resize(),
+
+  remove: Markup.removeKeyboard()
+};
+
+// ===========================
+// Message Templates
+// ===========================
+const Messages = {
+  welcome: `
+✨ خوش اومدین به سرزمین اکلیس!
+من درویدم، دستیار شما برای ثبت‌نام شخصیت‌ها.
+
+🔸 *امکانات ربات:*
+• ثبت شناسنامه شخصیت
+• مدیریت اطلاعات بازی
+• سیستم بانکی (به زودی)
+
+برای شروع یکی از گزینه‌های زیر رو انتخاب کنید:
+  `.trim(),
+
+  help: `
+📖 *راهنمای ربات اکلیس*
+
+🔹 *ثبت شناسنامه:*
+1️⃣ روی "ساخت شناسنامه" کلیک کنید
+2️⃣ فرم رو پر کنید و ارسال کنید
+3️⃣ استیکر یا عکس شخصیت رو بفرستید
+4️⃣ آهنگ مورد علاقه رو ارسال کنید
+5️⃣ کاور آهنگ رو ارسال کنید
+
+🔹 *دستورات:*
+/start - شروع مجدد
+/cancel - لغو عملیات
+/help - نمایش این راهنما
+/status - وضعیت ربات
+
+📞 پشتیبانی: @EclisSupport
+  `.trim(),
+
+  formTemplate: `
+🪶 *فرم ثبت شناسنامه*
+لطفاً فرم زیر رو کپی کرده و پر کنید:
+
+🪶 اسم و اسم خاندان:
+🪶 نژاد:
+🪶 تاریخ تولد به میلادی:
+🪶 اسم پدر / مادر:
+🪶 زیر کلاس:
+  `.trim(),
+
+  processing: `
+⏳ در حال پردازش اطلاعات شما...
+لطفاً کمی صبر کنید.
+  `.trim(),
+
+  success: `
+✅ *عملیات موفق!*
+اطلاعات شما با موفقیت ثبت شد.
+منتظر تأیید نهایی باشید.
+
+🆔 کد پیگیری: ${Math.random().toString(36).substr(2, 8).toUpperCase()}
+  `.trim(),
+
+  cancelled: `
+❌ *عملیات لغو شد*
+شما می‌تونید از منوی اصلی دوباره شروع کنید.
+  `.trim()
+};
+
+// ===========================
+// Registration Wizard Scene
 // ===========================
 const registrationWizard = new WizardScene(
   'registrationWizard',
   
-  // مرحله ۱: دریافت فرم
+  // Step 1: Receive Form
   async (ctx) => {
     try {
-      // بررسی کنید که آیا کاربر از دکمه منو آمده یا مستقیما پیا�� فرستاده
-      if (ctx.message && ctx.message.text === '📄 ساخت شناسنامه') {
-        // اگر کاربر دوباره دکمه را زد، اطلاعات قبلی را پاک کنید
-        if (ctx.from?.id) {
-          userData.delete(ctx.from.id);
-        }
-        
-        await ctx.reply(
-          "🪶 لطفاً فرم زیر رو کپی کرده و پر کنید:\n\n" +
-          "🪶 اسم و اسم خاندان:\n" +
-          "🪶 نژاد:\n" +
-          "🪶 تاریخ تولد به میلادی:\n" +
-          "🪶 اسم پدر / مادر:\n" +
-          "🪶 زیر کلاس:"
-        );
-      }
-      
-      await ctx.reply("📝 لطفاً فرم پر شده رو ارسال کنید:");
-      return ctx.wizard.next();
-    } catch (error) {
-      console.error('Error in form step:', error);
-      await ctx.reply("⚠️ خطایی پیش اومد. لطفاً /start رو بزنین و دوباره تلاش کنید.");
-      return ctx.scene.leave();
-    }
-  },
-  
-  // مرحله ۲: ذخیره فرم و دریافت استیکر/عکس
-  async (ctx) => {
-    try {
-      // اگر کاربر پیام متنی نفرستاده باشد
-      if (!ctx.message || !ctx.message.text) {
-        await ctx.reply("⚠️ لطفاً فقط متن فرم رو ارسال کنید.");
-        return ctx.wizard.selectStep(ctx.wizard.cursor); // در همین مرحله بماند
-      }
+      const user = userDataService.get(ctx.from.id) || {};
+      user.currentStep = 'form';
+      userDataService.set(ctx.from.id, user);
 
-      const formText = ctx.message.text;
+      await ctx.reply(
+        Messages.formTemplate,
+        { 
+          parse_mode: 'Markdown',
+          ...Keyboards.cancel
+        }
+      );
       
-      if (!validateForm(formText)) {
-        await ctx.reply("❌ فرم ارسالی ناقص است. لطفاً همه فیلدهای لازم رو پر کنید و دوباره تلاش کنید.\n\nفرم باید شامل این فیلدها باشد:\n- اسم و اسم خاندان\n- نژاد\n- تاریخ تولد به میلادی\n- اسم پدر / مادر\n- زیر کلاس");
-        return ctx.wizard.selectStep(ctx.wizard.cursor); // در همین مرحله بماند
-      }
-      
-      // ذخیره فرم
-      const user = userData.get(ctx.from.id) || {};
-      user.form = formText;
-      userData.set(ctx.from.id, user);
-      
-      await ctx.reply("✅ فرم شما دریافت شد!\n\n🌀 لطفاً استیکر رولتون یا عکس واضح از کرکترتون رو ارسال کنید.");
       return ctx.wizard.next();
     } catch (error) {
-      console.error('Error saving form:', error);
-      await ctx.reply("⚠️ خطایی در ذخیره فرم پیش اومد. لطفاً دوباره تلاش کنید.");
+      Logger.error('Error in form step', error);
+      await ctx.reply('❌ خطایی در شروع فرآیند ثبت‌نام پیش آمد.');
       return ctx.scene.leave();
     }
   },
-  
-  // مرحله ۳: دریافت استیکر/عکس
+
+  // Step 2: Validate and Store Form
   async (ctx) => {
     try {
-      let fileId;
-      let mediaType;
-      
-      if (ctx.message.sticker) {
-        fileId = ctx.message.sticker.file_id;
-        mediaType = 'sticker';
-      } else if (ctx.message.photo && ctx.message.photo.length > 0) {
-        fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-        mediaType = 'photo';
-      } else {
-        await ctx.reply("⚠️ لطفاً فقط استیکر یا عکس ارسال کنید.");
-        return ctx.wizard.selectStep(ctx.wizard.cursor); // در همین مرحله بماند
-      }
-      
-      const user = userData.get(ctx.from.id) || {};
-      user.sticker = fileId;
-      user.mediaType = mediaType;
-      userData.set(ctx.from.id, user);
-      
-      await ctx.reply("✅ رسانه دریافت شد!\n\n🎼 لطفاً آهنگ مورد علاقتون رو ارسال کنید.");
-      return ctx.wizard.next();
-    } catch (error) {
-      console.error('Error processing media:', error);
-      await ctx.reply("⚠️ خطایی در پردازش عکس/استیکر پیش اومد. لطفاً دوباره تلاش کنید.");
-      return ctx.scene.leave();
-    }
-  },
-  
-  // مرحله ۴: دریافت آهنگ
-  async (ctx) => {
-    try {
-      if (!ctx.message.audio) {
-        await ctx.reply("⚠️ لطفاً یک فایل صوتی (آهنگ) ارسال کنید.");
-        return ctx.wizard.selectStep(ctx.wizard.cursor);
-      }
-      
-      const user = userData.get(ctx.from.id) || {};
-      user.song = ctx.message.audio.file_id;
-      userData.set(ctx.from.id, user);
-      
-      await ctx.reply("✅ آهنگ دریافت شد!\n\n🎨 لطفاً کاور ��هنگ رو ارسال کنید.");
-      return ctx.wizard.next();
-    } catch (error) {
-      console.error('Error processing audio:', error);
-      await ctx.reply("⚠️ خطایی در پردازش آهنگ پیش اومد. لطفاً دوباره تلاش کنید.");
-      return ctx.scene.leave();
-    }
-  },
-  
-  // مرحله ۵: دریافت کاور و ارسال نهایی
-  async (ctx) => {
-    let user;
-    try {
-      if (!ctx.message.photo || ctx.message.photo.length === 0) {
-        await ctx.reply("⚠️ لطفاً عکس (کاور آهنگ) ارسال کنید.");
-        return ctx.wizard.selectStep(ctx.wizard.cursor);
-      }
-      
-      user = userData.get(ctx.from.id);
-      if (!user || !user.form) {
-        await ctx.reply("⚠️ اطلاعات شما یافت نشد. لطفاً از /start شروع کنید.");
+      // Handle cancellation
+      if (ctx.message.text === '❌ انصراف') {
+        await ctx.reply(Messages.cancelled, Keyboards.main);
+        userDataService.delete(ctx.from.id);
         return ctx.scene.leave();
       }
-      
-      user.cover = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-      userData.set(ctx.from.id, user);
-      
-      const formatted = formatForm(user.form, ctx.from.username);
-      
-      await ctx.reply("⏳ در حال ارسال اطلاعات به گروه... لطفاً صبر کنید.");
-      
-      // ارسال اطلاعات به گروه
-      try {
-        await safeSendToGroup(ctx, "��� شناسنامه جدید ارسال شد:");
-        await safeSendToGroup(ctx, formatted);
-        
-        if (user.sticker) {
-          await safeSendToGroup(ctx, null, {
-            type: user.mediaType,
-            fileId: user.sticker
-          });
-        }
-        
-        if (user.song) {
-          await safeSendToGroup(ctx, null, {
-            type: 'audio',
-            fileId: user.song,
-            thumb: user.cover
-          });
-        }
-        
-        await ctx.reply("✅ اطلاعات شما با موفقیت ارسال شد! منتظر تأیید باشید.");
-        
-      } catch (sendError) {
-        console.error('Error sending to group:', sendError);
-        await ctx.reply("❌ خطایی در ارسال اطلاعات به گروه رخ داد. لطفاً دوباره تلاش کنید.");
+
+      if (!ctx.message.text) {
+        await ctx.reply('⚠️ لطفاً فقط متن فرم رو ارسال کنید.');
+        return ctx.wizard.selectStep(ctx.wizard.cursor);
       }
-      
+
+      const validation = FormService.validate(ctx.message.text);
+      if (!validation.isValid) {
+        await ctx.reply(`❌ ${validation.error}\n\nلطفاً فرم رو دقیق پر کنید.`);
+        return ctx.wizard.selectStep(ctx.wizard.cursor);
+      }
+
+      // Store form data
+      const user = userDataService.get(ctx.from.id) || {};
+      user.formData = FormService.parse(ctx.message.text);
+      user.rawForm = ctx.message.text;
+      userDataService.set(ctx.from.id, user);
+
+      await ctx.reply(
+        '✅ فرم شما دریافت شد!\n\n🌀 لطفاً استیکر رولتون یا عکس واضح از کرکترتون رو ارسال کنید.',
+        Keyboards.cancel
+      );
+
+      return ctx.wizard.next();
     } catch (error) {
-      console.error('Error in final step:', error);
-      await ctx.reply("❌ خطای غیرمنتظره‌ای رخ داد. لطفاً دوباره تلاش کنید.");
-    } finally {
-      // پاک کردن داده‌های کاربر در هر صورت
-      if (ctx.from && ctx.from.id) {
-        userData.delete(ctx.from.id);
+      Logger.error('Error in form validation step', error);
+      await ctx.reply('❌ خطایی در پردازش فرم پیش آمد.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // Step 3: Receive Character Media
+  async (ctx) => {
+    try {
+      if (ctx.message.text === '❌ انصراف') {
+        await ctx.reply(Messages.cancelled, Keyboards.main);
+        userDataService.delete(ctx.from.id);
+        return ctx.scene.leave();
       }
+
+      const mediaInfo = MediaService.extractMediaInfo(ctx);
+      if (!mediaInfo || (mediaInfo.type !== 'sticker' && mediaInfo.type !== 'photo')) {
+        await ctx.reply('⚠️ لطفاً فقط استیکر یا عکس ارسال کنید.');
+        return ctx.wizard.selectStep(ctx.wizard.cursor);
+      }
+
+      const user = userDataService.get(ctx.from.id);
+      user.characterMedia = mediaInfo;
+      userDataService.set(ctx.from.id, user);
+
+      await ctx.reply(
+        '✅ رسانه دریافت شد!\n\n🎼 لطفاً آهنگ مورد علاقتون رو ارسال کنید.',
+        Keyboards.cancel
+      );
+
+      return ctx.wizard.next();
+    } catch (error) {
+      Logger.error('Error in media step', error);
+      await ctx.reply('❌ خطایی در پردازش رسانه پیش آمد.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // Step 4: Receive Favorite Song
+  async (ctx) => {
+    try {
+      if (ctx.message.text === '❌ انصراف') {
+        await ctx.reply(Messages.cancelled, Keyboards.main);
+        userDataService.delete(ctx.from.id);
+        return ctx.scene.leave();
+      }
+
+      const mediaInfo = MediaService.extractMediaInfo(ctx);
+      if (!mediaInfo || mediaInfo.type !== 'audio') {
+        await ctx.reply('⚠️ لطفاً یک فایل صوتی (آهنگ) ارسال کنید.');
+        return ctx.wizard.selectStep(ctx.wizard.cursor);
+      }
+
+      const user = userDataService.get(ctx.from.id);
+      user.favoriteSong = mediaInfo;
+      userDataService.set(ctx.from.id, user);
+
+      await ctx.reply(
+        '✅ آهنگ دریافت شد!\n\n🎨 لطفاً کاور آهنگ رو ارسال کنید.',
+        Keyboards.cancel
+      );
+
+      return ctx.wizard.next();
+    } catch (error) {
+      Logger.error('Error in audio step', error);
+      await ctx.reply('❌ خطایی در پردازش آهنگ پیش آمد.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // Step 5: Receive Song Cover and Final Submission
+  async (ctx) => {
+    try {
+      if (ctx.message.text === '❌ انصراف') {
+        await ctx.reply(Messages.cancelled, Keyboards.main);
+        userDataService.delete(ctx.from.id);
+        return ctx.scene.leave();
+      }
+
+      const mediaInfo = MediaService.extractMediaInfo(ctx);
+      if (!mediaInfo || mediaInfo.type !== 'photo') {
+        await ctx.reply('⚠️ لطفاً عکس (کاور آهنگ) ارسال کنید.');
+        return ctx.wizard.selectStep(ctx.wizard.cursor);
+      }
+
+      const user = userDataService.get(ctx.from.id);
+      if (!user || !user.formData) {
+        await ctx.reply('❌ اطلاعات شما یافت نشد. لطفاً دوباره شروع کنی��.');
+        return ctx.scene.leave();
+      }
+
+      user.songCover = mediaInfo;
+      userDataService.set(ctx.from.id, user);
+
+      await ctx.reply(Messages.processing);
+
+      // Send all data to group
+      await sendUserDataToGroup(ctx, user);
+
+      await ctx.reply(
+        Messages.success,
+        { 
+          parse_mode: 'Markdown',
+          ...Keyboards.main 
+        }
+      );
+
+      // Log successful registration
+      botEvents.emit('registration:success', {
+        userId: ctx.from.id,
+        username: ctx.from.username,
+        characterName: user.formData.name
+      });
+
+      userDataService.delete(ctx.from.id);
+      return ctx.scene.leave();
+
+    } catch (error) {
+      Logger.error('Error in final step', error);
+      await ctx.reply('❌ خطایی در ارسال نهایی پیش آمد.');
+      userDataService.delete(ctx.from.id);
       return ctx.scene.leave();
     }
   }
 );
 
-// هندلر برای پیام‌های خارج از سن‌ها در WizardScene
-registrationWizard.use(async (ctx, next) => {
+// Helper function to send user data to group
+async function sendUserDataToGroup(ctx, user) {
   try {
-    // اگر کاربر در حالتی که انتظار داریم پیام خاصی بفرستد، پیام نامربوط فرستاد
-    if (ctx.message && ctx.message.text && 
-        (ctx.message.text === '📄 ساخت شناسنامه' || ctx.message.text === '🏦 ورود به بانک')) {
-      await ctx.reply("⚠️ در حال حاضر در حال ثبت شناسنامه هستید. لطفاً مراحل رو تکمیل کنید یا /cancel رو بزنین.");
-      return;
+    const formattedForm = FormService.format(user.formData, ctx.from.username);
+
+    // Send form data
+    await messageQueue.add(
+      () => ctx.telegram.sendMessage(config.groupId, `📜 شناسنامه جدید\n\n${formattedForm}`),
+      'send_form_data'
+    );
+
+    // Send character media
+    if (user.characterMedia) {
+      await messageQueue.add(
+        () => MediaService.sendMediaToGroup(ctx, user.characterMedia, '🎭 شخصیت'),
+        'send_character_media'
+      );
     }
-    return next();
+
+    // Send favorite song
+    if (user.favoriteSong) {
+      await messageQueue.add(
+        () => MediaService.sendMediaToGroup(ctx, user.favoriteSong, '🎵 آهنگ مورد علاقه'),
+        'send_favorite_song'
+      );
+    }
+
+    Logger.success('User data sent to group successfully', {
+      userId: ctx.from.id,
+      username: ctx.from.username
+    });
+
   } catch (error) {
-    console.error('Error in wizard middleware:', error);
+    Logger.error('Error sending user data to group', error);
+    throw error;
   }
+}
+
+// ===========================
+// Event Handlers
+// ===========================
+botEvents.on('user:updated', ({ userId, data }) => {
+  Logger.info(`User data updated: ${userId}`, {
+    step: data.currentStep,
+    hasForm: !!data.formData,
+    hasMedia: !!data.characterMedia
+  });
+});
+
+botEvents.on('registration:success', ({ userId, username, characterName }) => {
+  Logger.success(`New registration completed`, {
+    userId,
+    username,
+    characterName
+  });
+});
+
+botEvents.on('queue:success', ({ description }) => {
+  Logger.info(`Queue task completed: ${description}`);
+});
+
+botEvents.on('queue:error', ({ description, error }) => {
+  Logger.error(`Queue task failed: ${description}`, error);
 });
 
 // ===========================
-// تنظیم سن‌ها و میدلورها
+// Bot Command Handlers
+// ===========================
+
+// Start command
+bot.start(async (ctx) => {
+  await ctx.reply(
+    Messages.welcome,
+    { 
+      parse_mode: 'Markdown',
+      ...Keyboards.main 
+    }
+  );
+});
+
+// Help command
+bot.help(async (ctx) => {
+  await ctx.reply(
+    Messages.help,
+    { 
+      parse_mode: 'Markdown',
+      ...Keyboards.main 
+    }
+  );
+});
+
+// Status command
+bot.command('status', async (ctx) => {
+  const queueStats = messageQueue.getStats();
+  const userStats = userDataService.getStats();
+  
+  const statusMessage = `
+📊 *وضعیت ربات*
+
+👥 *کاربران:*
+• فعال: ${userStats.activeUsers}
+• کل: ${userStats.totalUsers}
+
+📨 *صف ارسال:*
+• در حال پردازش: ${queueStats.active}
+• در انتظار: ${queueStats.pending}
+• موفق: ${queueStats.processed}
+• ناموفق: ${queueStats.failed}
+
+⏱ *آپتایم: ${Math.floor(process.uptime())} ثانیه*
+  `.trim();
+
+  await ctx.reply(statusMessage, { parse_mode: 'Markdown' });
+});
+
+// Cancel command
+bot.command('cancel', async (ctx) => {
+  if (ctx.scene?.current) {
+    userDataService.delete(ctx.from.id);
+    await ctx.reply(Messages.cancelled, Keyboards.main);
+    await ctx.scene.leave();
+  } else {
+    await ctx.reply('⚠️ در حال حاضر در حال ثبت‌نام نیستید.', Keyboards.main);
+  }
+});
+
+// Handle registration button
+bot.hears('📄 ساخت شناسنامه', async (ctx) => {
+  try {
+    // Clear any existing user data
+    userDataService.delete(ctx.from.id);
+    
+    // Initialize new user session
+    userDataService.set(ctx.from.id, {
+      startedAt: Date.now(),
+      currentStep: 'started'
+    });
+
+    await ctx.scene.enter('registrationWizard');
+    
+    Logger.info('User started registration', {
+      userId: ctx.from.id,
+      username: ctx.from.username
+    });
+
+  } catch (error) {
+    Logger.error('Error starting registration', error);
+    await ctx.reply('❌ خطایی در شروع ثبت‌نام پیش آمد. لطفاً دوباره تلاش کنید.', Keyboards.main);
+  }
+});
+
+// Handle bank button
+bot.hears('🏦 ورود به بانک', async (ctx) => {
+  await ctx.reply('🚧 سیستم بانکی به زودی راه‌اندازی خواهد شد.', Keyboards.main);
+});
+
+// Handle help button
+bot.hears('ℹ️ راهنما', async (ctx) => {
+  await ctx.reply(
+    Messages.help,
+    { 
+      parse_mode: 'Markdown',
+      ...Keyboards.main 
+    }
+  );
+});
+
+// ===========================
+// Setup Stage and Middleware
 // ===========================
 const stage = new Stage([registrationWizard]);
 
 bot.use(session());
 bot.use(stage.middleware());
 
-// ===========================
-// هندلرهای اصلی
-// ===========================
-
-// دستور start
-bot.start(async (ctx) => {
-  const keyboard = Markup.keyboard([
-    ['📄 ساخت شناسنامه'],
-    ['🏦 ورود به بانک']
-  ]).resize();
-  
-  await ctx.reply(
-    "✨ خوش اومدین!\n" +
-    "من درویدم، دستیار شما توی سرزمین اکلیس.\n\n" +
-    "برای شروع یکی از دکمه‌های پایین رو انتخاب کنید:",
-    keyboard
-  );
-});
-
-// هندلر دکمه "ورود به بانک"
-bot.hears('🏦 ورود به بانک', async (ctx) => {
-  await ctx.reply("🚧 این بخش به زودی فعال خواهد شد!");
-});
-
-// هندلر دکمه "ساخت شناسنامه" - اینجا مشکل اصلی حل شده
-bot.hears('📄 ساخت شناسنامه', async (ctx) => {
-  try {
-    // ابتدا کاربر را به صحنه ویزارد منتقل می‌کنیم
-    await ctx.scene.enter('registrationWizard');
-    
-    // سپس پیام راهنما را ارسال می‌کنیم
-    await ctx.reply(
-      "🪶 لطفاً فرم زیر رو کپی کرده و پر کنید:\n\n" +
-      "🪶 اسم و اسم خاندان:\n" +
-      "🪶 نژاد:\n" +
-      "🪶 تاریخ تولد به میلادی:\n" +
-      "🪶 اسم پدر / مادر:\n" +
-      "🪶 زیر کلاس:"
-    );
-    
-    // ذخیره داده کاربر
-    userData.set(ctx.from.id, {});
-    
-  } catch (error) {
-    console.error('Error entering scene:', error);
-    await ctx.reply("⚠️ خطایی در شروع فرآیند ثبت‌نام پیش اومد. لطفاً دوباره تلاش کنید.");
-  }
-});
-
-// دستور cancel برای خروج از صحنه
-bot.command('cancel', async (ctx) => {
-  if (ctx.scene?.current) {
-    if (ctx.from?.id) {
-      userData.delete(ctx.from.id);
-    }
-    await ctx.reply("❌ فرآیند ثبت‌نام لغو شد.");
-    return ctx.scene.leave();
-  } else {
-    await ctx.reply("❌ در حال حاضر در حال ثبت‌نام نیستید.");
-  }
-});
-
-// ===========================
-// هندلر خطاهای全局
-// ===========================
+// Global error handler
 bot.catch(async (err, ctx) => {
-  console.error(`Error for ${ctx.updateType}:`, err);
+  Logger.error(`Global error for ${ctx.updateType}`, err);
+  
   try {
-    await ctx.reply("⚠️ خطای سیستمی پیش اومد. لطفاً دوباره تلاش کنید.");
+    await ctx.reply('❌ خطای سیستمی پیش آمد. لطفاً دوباره تلاش کنید.', Keyboards.main);
+    
     if (ctx.from?.id) {
-      userData.delete(ctx.from.id);
+      userDataService.delete(ctx.from.id);
       if (ctx.scene?.current) {
         await ctx.scene.leave();
       }
     }
   } catch (e) {
-    console.error('Error in error handler:', e);
+    Logger.error('Error in global error handler', e);
   }
 });
 
 // ===========================
-// راه‌اندازی وب‌سرور و وب‌هوک
+// Express Server Setup
 // ===========================
 expressApp.use(express.json());
 
+// Webhook endpoint
 expressApp.post('/webhook', async (req, res) => {
   try {
     await bot.handleUpdate(req.body);
     res.status(200).json({ ok: true });
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ ok: false });
+    Logger.error('Webhook error', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
+// Health check endpoint
 expressApp.get('/', (req, res) => {
-  res.json({ 
-    status: 'Bot is running!',
-    service: 'Eclis Registry Bot v2.3',
-    queueStatus: {
-      pending: messageQueue.size,
-      active: messageQueue.pending,
-      usersInQueue: userData.size
-    },
-    uptime: process.uptime()
-  });
+  const stats = {
+    status: '✅ Bot is running',
+    service: 'Eclis Registry Bot - Modern Architecture',
+    timestamp: new Date().toISOString(),
+    version: '3.0.0',
+    queue: messageQueue.getStats(),
+    users: userDataService.getStats(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  };
+
+  res.json(stats);
 });
 
-expressApp.get('/queue-status', (req, res) => {
-  res.json({
-    pending: messageQueue.size,
-    active: messageQueue.pending,
-    usersInQueue: userData.size
-  });
+// Queue status endpoint
+expressApp.get('/queue', (req, res) => {
+  res.json(messageQueue.getStats());
+});
+
+// Users status endpoint
+expressApp.get('/users', (req, res) => {
+  res.json(userDataService.getStats());
 });
 
 // ===========================
-// راه‌اندازی ربات
+// Startup Function
 // ===========================
 async function startBot() {
   try {
     if (process.env.NODE_ENV === 'production') {
-      const WEBHOOK_URL = process.env.WEBHOOK_URL || "https://eclis-registery-bot.onrender.com/webhook";
-      await bot.telegram.setWebhook(WEBHOOK_URL);
-      console.log('✅ Webhook set successfully');
+      await bot.telegram.setWebhook(config.webhookUrl);
+      Logger.success('Webhook set successfully', { url: config.webhookUrl });
       
-      expressApp.listen(PORT, () => {
-        console.log(`🚀 Bot server running on port ${PORT}`);
-        console.log(`👥 Custom queue system ready - Max concurrent users: 3`);
-        console.log(`📊 Monitoring available at /queue-status`);
+      expressApp.listen(config.port, () => {
+        Logger.success(`Bot server running on port ${config.port}`);
       });
     } else {
       await bot.launch();
-      console.log('🤖 Bot started with polling');
-      console.log(`👥 Custom queue system ready - Max concurrent users: 3`);
+      Logger.success('Bot started with polling');
     }
-    
-    console.log('✅ Eclis Registry Bot v2.3 is ready!');
-    console.log('✅ Fixed: WizardScene issues and message handling');
+
+    Logger.success('Eclis Registry Bot v3.0 is ready!', {
+      maxConcurrentUsers: config.maxConcurrentUsers,
+      environment: process.env.NODE_ENV || 'development'
+    });
+
+    // Log initial stats
+    Logger.info('Initial system status', {
+      queue: messageQueue.getStats(),
+      users: userDataService.getStats()
+    });
+
   } catch (error) {
-    console.error('❌ Error starting bot:', error);
+    Logger.error('Error starting bot', error);
     process.exit(1);
   }
 }
 
-// مدیریت graceful shutdown
-process.once('SIGINT', () => {
-  console.log('🛑 Shutting down gracefully...');
-  if (userData.cleanupInterval) {
-    clearInterval(userData.cleanupInterval);
-  }
-  bot.stop('SIGINT');
-  process.exit(0);
-});
+// ===========================
+// Graceful Shutdown
+// ===========================
+function setupGracefulShutdown() {
+  const shutdown = async (signal) => {
+    Logger.info(`Received ${signal}, shutting down gracefully...`);
+    
+    // Stop receiving new updates
+    bot.stop(signal);
+    
+    // Clear intervals
+    if (userDataService.cleanupInterval) {
+      clearInterval(userDataService.cleanupInterval);
+    }
+    
+    // Log final stats
+    Logger.info('Final statistics', {
+      queue: messageQueue.getStats(),
+      users: userDataService.getStats()
+    });
+    
+    setTimeout(() => {
+      Logger.success('Shutdown completed');
+      process.exit(0);
+    }, 1000);
+  };
 
-process.once('SIGTERM', () => {
-  console.log('🛑 Shutting down gracefully...');
-  if (userData.cleanupInterval) {
-    clearInterval(userData.cleanupInterval);
-  }
-  bot.stop('SIGTERM');
-  process.exit(0);
-});
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+}
 
+// ===========================
+// Start the Application
+// ===========================
+setupGracefulShutdown();
 startBot();

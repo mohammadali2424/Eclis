@@ -1,7 +1,6 @@
 const { Telegraf, Scenes: { WizardScene }, session, Markup } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
-const PQueue = require('p-queue'); // import ساده شده
 
 dotenv.config();
 
@@ -17,13 +16,60 @@ const GROUP_ID = -1002511380813;
 const PORT = process.env.PORT || 3000;
 
 // ===========================
-// ایجاد صف برای مدیریت کاربران همزمان
+// ایجاد صف ساده و پایدار برای مدیریت کاربران همزمان
 // ===========================
-const messageQueue = new PQueue({
-  concurrency: 3,
-  timeout: 45000,
-  throwOnTimeout: false
-});
+class SimpleQueue {
+  constructor(concurrency = 3) {
+    this.concurrency = concurrency;
+    this.active = 0;
+    this.queue = [];
+  }
+
+  add(task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject });
+      this._next();
+    });
+  }
+
+  _next() {
+    if (this.active >= this.concurrency || this.queue.length === 0) {
+      return;
+    }
+
+    this.active++;
+    const { task, resolve, reject } = this.queue.shift();
+
+    const next = () => {
+      this.active--;
+      this._next();
+    };
+
+    Promise.resolve(task())
+      .then((result) => {
+        resolve(result);
+        next();
+      })
+      .catch((error) => {
+        reject(error);
+        next();
+      });
+  }
+
+  get size() {
+    return this.queue.length;
+  }
+
+  get pending() {
+    return this.active;
+  }
+
+  get completed() {
+    return 0; // برای سادگی، این مقدار ثابت در نظر گرفته شد
+  }
+}
+
+const messageQueue = new SimpleQueue(3); // ۳ کاربر همزمان
 
 // ===========================
 // ایجاد برنامه‌ها
@@ -386,9 +432,12 @@ expressApp.post('/webhook', async (req, res) => {
 expressApp.get('/', (req, res) => {
   res.json({ 
     status: 'Bot is running!',
-    service: 'Eclis Registry Bot v2.1',
-    concurrentUsers: messageQueue.size,
-    activeUsers: userData.size,
+    service: 'Eclis Registry Bot v2.2',
+    queueStatus: {
+      pending: messageQueue.size,
+      active: messageQueue.pending,
+      usersInQueue: userData.size
+    },
     uptime: process.uptime()
   });
 });
@@ -397,7 +446,6 @@ expressApp.get('/queue-status', (req, res) => {
   res.json({
     pending: messageQueue.size,
     active: messageQueue.pending,
-    completed: messageQueue.completed,
     usersInQueue: userData.size
   });
 });
@@ -414,16 +462,17 @@ async function startBot() {
       
       expressApp.listen(PORT, () => {
         console.log(`🚀 Bot server running on port ${PORT}`);
-        console.log(`👥 Queue system ready - Max concurrent users: 3`);
+        console.log(`👥 Custom queue system ready - Max concurrent users: 3`);
         console.log(`📊 Monitoring available at /queue-status`);
       });
     } else {
       await bot.launch();
       console.log('🤖 Bot started with polling');
-      console.log(`👥 Queue system ready - Max concurrent users: 3`);
+      console.log(`👥 Custom queue system ready - Max concurrent users: 3`);
     }
     
-    console.log('✅ Eclis Registry Bot v2.1 is ready!');
+    console.log('✅ Eclis Registry Bot v2.2 is ready!');
+    console.log('✅ Fixed: Replaced p-queue with stable custom queue system');
   } catch (error) {
     console.error('❌ Error starting bot:', error);
     process.exit(1);

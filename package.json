@@ -1,11 +1,10 @@
 {
   "name": "eclis-registery-bot",
-  "version": "4.5.0",
-  "description": "Professional Telegram bot for Eclis character registration with beautiful user info display",
+  "version": "4.0.0",
+  "description": "Telegram bot for Eclis character registration",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "nodemon bot.js"
+    "start": "node bot.js"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
@@ -14,14 +13,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "keywords": [
-    "telegram",
-    "bot",
-    "eclis",
-    "registration",
-    "persian"
-  ],
-  "author": "Eclis Team",
-  "license": "MIT"
+  }
 }

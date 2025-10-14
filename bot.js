@@ -1,5 +1,4 @@
-const { Telegraf, Scenes: { WizardScene }, session, Markup } = require('telegraf');
-const { Stage } = require('telegraf/scenes');
+const { Telegraf, Scenes: { WizardScene }, session, Markup, Stage } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
 
@@ -10,7 +9,7 @@ dotenv.config();
 // ===========================
 const config = {
   token: process.env.BOT_TOKEN,
-  groupId: -1002511380813,
+  groupId: process.env.GROUP_ID || -1002511380813,
   port: process.env.PORT || 3000,
   webhookUrl: process.env.WEBHOOK_URL || "https://eclis-registery-bot.onrender.com/webhook",
   maxConcurrentUsers: 3,
@@ -233,24 +232,54 @@ class FormService {
       };
     }
 
+    // بررسی کامل بودن فیلدها
+    const parsed = this.parse(formText);
+    const emptyFields = [];
+    
+    if (!parsed.name || parsed.name === "نامشخص") emptyFields.push("اسم و اسم خاندان");
+    if (!parsed.race || parsed.race === "نامشخص") emptyFields.push("نژاد");
+    if (!parsed.birth || parsed.birth === "نامشخص") emptyFields.push("تاریخ تولد");
+    if (!parsed.parents || parsed.parents === "نامشخص") emptyFields.push("اسم پدر/مادر");
+    if (!parsed.subclass || parsed.subclass === "نامشخص") emptyFields.push("زیر کلاس");
+
+    if (emptyFields.length > 0) {
+      return { 
+        isValid: false, 
+        error: `فیلدهای زیر پر نشده‌اند: ${emptyFields.join(', ')}` 
+      };
+    }
+
     return { isValid: true };
   }
 
   static parse(formText) {
     const lines = formText.trim().split('\n');
-    
-    const extractValue = (index, fieldName) => {
-      return lines[index]?.replace(fieldName, "").trim() || "نامشخص";
-    };
-
-    return {
-      name: extractValue(0, "اسم و اسم خاندان:"),
-      race: extractValue(1, "نژاد:"),
-      birth: extractValue(2, "تاریخ تولد به میلادی:"),
-      parents: extractValue(3, "اسم پدر / مادر:"),
-      subclass: extractValue(4, "زیر کلاس:"),
+    const result = {
+      name: "نامشخص",
+      race: "نامشخص",
+      birth: "نامشخص",
+      parents: "نامشخص",
+      subclass: "نامشخص",
       rawText: formText
     };
+    
+    // پارس بر اساس نام فیلدها نه ترتیب
+    lines.forEach(line => {
+      const trimmedLine = line.trim();
+      if (trimmedLine.includes("اسم و اسم خاندان:")) {
+        result.name = trimmedLine.replace("اسم و اسم خاندان:", "").trim();
+      } else if (trimmedLine.includes("نژاد:")) {
+        result.race = trimmedLine.replace("نژاد:", "").trim();
+      } else if (trimmedLine.includes("تاریخ تولد به میلادی:")) {
+        result.birth = trimmedLine.replace("تاریخ تولد به میلادی:", "").trim();
+      } else if (trimmedLine.includes("اسم پدر / مادر:")) {
+        result.parents = trimmedLine.replace("اسم پدر / مادر:", "").trim();
+      } else if (trimmedLine.includes("زیر ��لاس:")) {
+        result.subclass = trimmedLine.replace("زیر کلاس:", "").trim();
+      }
+    });
+    
+    return result;
   }
 
   static format(parsedData, username) {
@@ -421,6 +450,11 @@ const registrationWizard = new WizardScene(
   // Step 1: Receive Form
   async (ctx) => {
     try {
+      Logger.info('User entered registration wizard', {
+        userId: ctx.from.id,
+        username: ctx.from.username
+      });
+
       const user = userDataService.get(ctx.from.id) || {};
       user.currentStep = 'form';
       userDataService.set(ctx.from.id, user);
@@ -436,7 +470,7 @@ const registrationWizard = new WizardScene(
       return ctx.wizard.next();
     } catch (error) {
       Logger.error('Error in form step', error);
-      await ctx.reply('❌ خطایی در شروع فرآیند ثبت‌نام پیش آمد.');
+      await ctx.reply('❌ خطایی در شروع فرآیند ثبت‌نام پیش آمد.', Keyboards.main);
       return ctx.scene.leave();
     }
   },
@@ -468,6 +502,11 @@ const registrationWizard = new WizardScene(
       user.rawForm = ctx.message.text;
       userDataService.set(ctx.from.id, user);
 
+      Logger.info('Form received and validated', {
+        userId: ctx.from.id,
+        characterName: user.formData.name
+      });
+
       await ctx.reply(
         '✅ فرم شما دریافت شد!\n\n🌀 لطفاً استیکر رولتون یا عکس واضح از کرکترتون رو ارسال کنید.',
         Keyboards.cancel
@@ -476,7 +515,7 @@ const registrationWizard = new WizardScene(
       return ctx.wizard.next();
     } catch (error) {
       Logger.error('Error in form validation step', error);
-      await ctx.reply('❌ خطایی در پردازش فرم پیش آمد.');
+      await ctx.reply('❌ خطایی در پردازش فرم پیش آمد.', Keyboards.main);
       return ctx.scene.leave();
     }
   },
@@ -500,6 +539,11 @@ const registrationWizard = new WizardScene(
       user.characterMedia = mediaInfo;
       userDataService.set(ctx.from.id, user);
 
+      Logger.info('Character media received', {
+        userId: ctx.from.id,
+        mediaType: mediaInfo.type
+      });
+
       await ctx.reply(
         '✅ رسانه دریافت شد!\n\n🎼 لطفاً آهنگ مورد علاقتون رو ارسال کنید.',
         Keyboards.cancel
@@ -508,7 +552,7 @@ const registrationWizard = new WizardScene(
       return ctx.wizard.next();
     } catch (error) {
       Logger.error('Error in media step', error);
-      await ctx.reply('❌ خطایی در پردازش رسانه پیش آمد.');
+      await ctx.reply('❌ خطایی در پردازش رسانه پیش آمد.', Keyboards.main);
       return ctx.scene.leave();
     }
   },
@@ -532,6 +576,11 @@ const registrationWizard = new WizardScene(
       user.favoriteSong = mediaInfo;
       userDataService.set(ctx.from.id, user);
 
+      Logger.info('Favorite song received', {
+        userId: ctx.from.id,
+        songTitle: mediaInfo.title
+      });
+
       await ctx.reply(
         '✅ آهنگ دریافت شد!\n\n🎨 لطفاً کاور آهنگ رو ارسال کنید.',
         Keyboards.cancel
@@ -540,7 +589,7 @@ const registrationWizard = new WizardScene(
       return ctx.wizard.next();
     } catch (error) {
       Logger.error('Error in audio step', error);
-      await ctx.reply('❌ خطایی در پردازش آهنگ پیش آمد.');
+      await ctx.reply('❌ خطایی در پردازش آهنگ پیش آمد.', Keyboards.main);
       return ctx.scene.leave();
     }
   },
@@ -562,7 +611,7 @@ const registrationWizard = new WizardScene(
 
       const user = userDataService.get(ctx.from.id);
       if (!user || !user.formData) {
-        await ctx.reply('❌ اطلاعات شما یافت نشد. لطفاً دوباره شروع کنی��.');
+        await ctx.reply('❌ اطلاعات شما یافت نشد. لطفاً دوباره شروع کنید.', Keyboards.main);
         return ctx.scene.leave();
       }
 
@@ -572,29 +621,44 @@ const registrationWizard = new WizardScene(
       await ctx.reply(Messages.processing);
 
       // Send all data to group
-      await sendUserDataToGroup(ctx, user);
+      try {
+        await sendUserDataToGroup(ctx, user);
+        
+        await ctx.reply(
+          Messages.success,
+          { 
+            parse_mode: 'Markdown',
+            ...Keyboards.main 
+          }
+        );
 
-      await ctx.reply(
-        Messages.success,
-        { 
-          parse_mode: 'Markdown',
-          ...Keyboards.main 
-        }
-      );
+        // Log successful registration
+        botEvents.emit('registration:success', {
+          userId: ctx.from.id,
+          username: ctx.from.username,
+          characterName: user.formData.name
+        });
 
-      // Log successful registration
-      botEvents.emit('registration:success', {
-        userId: ctx.from.id,
-        username: ctx.from.username,
-        characterName: user.formData.name
-      });
+        Logger.success('Registration completed successfully', {
+          userId: ctx.from.id,
+          username: ctx.from.username,
+          characterName: user.formData.name
+        });
+
+      } catch (error) {
+        Logger.error('Error sending data to group', error);
+        await ctx.reply(
+          '❌ خطایی در ارسال اطلاعات به گروه پیش آمد. اطلاعات شما ذخیره شد، لطفاً با پشتیبانی تماس بگیرید.\n\n@EclisSupport',
+          Keyboards.main
+        );
+      }
 
       userDataService.delete(ctx.from.id);
       return ctx.scene.leave();
 
     } catch (error) {
       Logger.error('Error in final step', error);
-      await ctx.reply('❌ خطایی در ارسال نهایی پیش آمد.');
+      await ctx.reply('❌ خطایی در ارسال نهایی پیش آمد.', Keyboards.main);
       userDataService.delete(ctx.from.id);
       return ctx.scene.leave();
     }
@@ -628,6 +692,14 @@ async function sendUserDataToGroup(ctx, user) {
       );
     }
 
+    // Send song cover
+    if (user.songCover) {
+      await messageQueue.add(
+        () => MediaService.sendMediaToGroup(ctx, user.songCover, '🎨 کاور آهنگ'),
+        'send_song_cover'
+      );
+    }
+
     Logger.success('User data sent to group successfully', {
       userId: ctx.from.id,
       username: ctx.from.username
@@ -635,6 +707,13 @@ async function sendUserDataToGroup(ctx, user) {
 
   } catch (error) {
     Logger.error('Error sending user data to group', error);
+    
+    // اطلاع به کاربر درباره خطا
+    await ctx.reply(
+      '⚠️ برخی اطلاعات به گروه ارسال نشد. لطفاً با پشتیبانی تماس بگیرید.',
+      Keyboards.main
+    );
+    
     throw error;
   }
 }
@@ -666,38 +745,56 @@ botEvents.on('queue:error', ({ description, error }) => {
   Logger.error(`Queue task failed: ${description}`, error);
 });
 
+botEvents.on('cleanup:completed', ({ cleanedCount }) => {
+  Logger.info(`Cleanup completed`, { cleanedCount });
+});
+
 // ===========================
 // Bot Command Handlers
 // ===========================
 
 // Start command
 bot.start(async (ctx) => {
-  await ctx.reply(
-    Messages.welcome,
-    { 
-      parse_mode: 'Markdown',
-      ...Keyboards.main 
-    }
-  );
+  try {
+    await ctx.reply(
+      Messages.welcome,
+      { 
+        parse_mode: 'Markdown',
+        ...Keyboards.main 
+      }
+    );
+    
+    Logger.info('User started bot', {
+      userId: ctx.from.id,
+      username: ctx.from.username
+    });
+  } catch (error) {
+    Logger.error('Error in start command', error);
+  }
 });
 
 // Help command
 bot.help(async (ctx) => {
-  await ctx.reply(
-    Messages.help,
-    { 
-      parse_mode: 'Markdown',
-      ...Keyboards.main 
-    }
-  );
+  try {
+    await ctx.reply(
+      Messages.help,
+      { 
+        parse_mode: 'Markdown',
+        ...Keyboards.main 
+      }
+    );
+  } catch (error) {
+    Logger.error('Error in help command', error);
+  }
 });
 
 // Status command
 bot.command('status', async (ctx) => {
-  const queueStats = messageQueue.getStats();
-  const userStats = userDataService.getStats();
-  
-  const statusMessage = `
+  try {
+    const queueStats = messageQueue.getStats();
+    const userStats = userDataService.getStats();
+    
+    const statusMessage = `
 📊 *وضعیت ربات*
 
 👥 *کاربران:*
@@ -711,19 +808,28 @@ bot.command('status', async (ctx) => {
 • ناموفق: ${queueStats.failed}
 
 ⏱ *آپتایم: ${Math.floor(process.uptime())} ثانیه*
-  `.trim();
+    `.trim();
 
-  await ctx.reply(statusMessage, { parse_mode: 'Markdown' });
+    await ctx.reply(statusMessage, { parse_mode: 'Markdown' });
+  } catch (error) {
+    Logger.error('Error in status command', error);
+    await ctx.reply('❌ خطایی در دریافت وضعیت پیش آمد.');
+  }
 });
 
 // Cancel command
 bot.command('cancel', async (ctx) => {
-  if (ctx.scene?.current) {
-    userDataService.delete(ctx.from.id);
-    await ctx.reply(Messages.cancelled, Keyboards.main);
-    await ctx.scene.leave();
-  } else {
-    await ctx.reply('⚠️ در حال حاضر در حال ثبت‌نام نیستید.', Keyboards.main);
+  try {
+    if (ctx.scene?.current) {
+      userDataService.delete(ctx.from.id);
+      await ctx.reply(Messages.cancelled, Keyboards.main);
+      await ctx.scene.leave();
+      Logger.info('User cancelled operation', { userId: ctx.from.id });
+    } else {
+      await ctx.reply('⚠️ در حال حاضر در حال ثبت‌نام نیستید.', Keyboards.main);
+    }
+  } catch (error) {
+    Logger.error('Error in cancel command', error);
   }
 });
 
@@ -754,18 +860,40 @@ bot.hears('📄 ساخت شناسنامه', async (ctx) => {
 
 // Handle bank button
 bot.hears('🏦 ورود به بانک', async (ctx) => {
-  await ctx.reply('🚧 سیستم بانکی به زودی راه‌اندازی خواهد شد.', Keyboards.main);
+  try {
+    await ctx.reply('🚧 سیستم بانکی به زودی راه‌اندازی خواهد شد.', Keyboards.main);
+  } catch (error) {
+    Logger.error('Error in bank button', error);
+  }
 });
 
 // Handle help button
 bot.hears('ℹ️ راهنما', async (ctx) => {
-  await ctx.reply(
-    Messages.help,
-    { 
-      parse_mode: 'Markdown',
-      ...Keyboards.main 
+  try {
+    await ctx.reply(
+      Messages.help,
+      { 
+        parse_mode: 'Markdown',
+        ...Keyboards.main 
+      }
+    );
+  } catch (error) {
+    Logger.error('Error in help button', error);
+  }
+});
+
+// Handle any other message
+bot.on('message', async (ctx) => {
+  try {
+    if (!ctx.scene?.current) {
+      await ctx.reply(
+        'لطفاً از منوی زیر یکی از گزینه‌ها رو انتخاب کنید:',
+        Keyboards.main
+      );
     }
-  );
+  } catch (error) {
+    Logger.error('Error in message handler', error);
+  }
 });
 
 // ===========================
@@ -814,9 +942,9 @@ expressApp.post('/webhook', async (req, res) => {
 expressApp.get('/', (req, res) => {
   const stats = {
     status: '✅ Bot is running',
-    service: 'Eclis Registry Bot - Modern Architecture',
+    service: 'Eclis Registry Bot - Fixed Version',
     timestamp: new Date().toISOString(),
-    version: '3.0.0',
+    version: '3.1.0',
     queue: messageQueue.getStats(),
     users: userDataService.getStats(),
     uptime: process.uptime(),
@@ -841,6 +969,11 @@ expressApp.get('/users', (req, res) => {
 // ===========================
 async function startBot() {
   try {
+    Logger.info('Starting bot...', {
+      environment: process.env.NODE_ENV || 'development',
+      port: config.port
+    });
+
     if (process.env.NODE_ENV === 'production') {
       await bot.telegram.setWebhook(config.webhookUrl);
       Logger.success('Webhook set successfully', { url: config.webhookUrl });
@@ -853,7 +986,7 @@ async function startBot() {
       Logger.success('Bot started with polling');
     }
 
-    Logger.success('Eclis Registry Bot v3.0 is ready!', {
+    Logger.success('Eclis Registry Bot v3.1 is ready!', {
       maxConcurrentUsers: config.maxConcurrentUsers,
       environment: process.env.NODE_ENV || 'development'
     });

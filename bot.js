@@ -1,37 +1,37 @@
 const { Telegraf, Markup, session } = require('telegraf');
-const express = require('express'); // وارد کردن express
+const express = require('express');
 
-// 🔧 خواندن تنظیمات از متغیرهای محیطی
+// خواندن تنظیمات از متغیرهای محیطی
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const REVIEW_GROUP_ID = process.env.REVIEW_GROUP_ID;
 const ACCEPTED_GROUP_ID = process.env.ACCEPTED_GROUP_ID;
-const PORT = process.env.PORT || 3000; // پورت اجباری برای Render
+const PORT = process.env.PORT || 3000;
 
-// بررسی وجود متغیرهای حیاتی
+// بررسی وجود متغیرهای ضروری
 if (!BOT_TOKEN) {
-  console.error('❌ خطای بحرانی: متغیر محیطی BOT_TOKEN تنظیم نشده است.');
-  process.exit(1);
-}
-if (!REVIEW_GROUP_ID || !ACCEPTED_GROUP_ID) {
-  console.error('❌ خطای بحرانی: آیدی گروه‌ها (REVIEW_GROUP_ID یا ACCEPTED_GROUP_ID) تنظیم نشده است.');
+  console.error('❌ خطا: BOT_TOKEN تنظیم نشده است');
   process.exit(1);
 }
 
 const bot = new Telegraf(BOT_TOKEN);
-const app = express(); // ایجاد برنامه اکسپرس
+const app = express();
 
-// 🔧 middleware سشن
-bot.use(session({ defaultSession: () => ({}) }));
+// middleware سشن
+bot.use(session({ 
+  defaultSession: () => ({
+    step: 'START',
+    userData: {}
+  })
+}));
 
 // 🗂️ مراحل کاربر
 const UserStep = {
-    START: 'start',
-    AWAITING_FORM: 'awaiting_form',
-    AWAITING_STICKER: 'awaiting_sticker',
-    AWAITING_TATTOO_PHOTO: 'awaiting_tattoo_photo',
-    AWAITING_SONG: 'awaiting_song',
-    AWAITING_COVER_PHOTO: 'awaiting_cover_photo',
-    COMPLETED: 'completed'
+    START: 'START',
+    AWAITING_FORM: 'AWAITING_FORM',
+    AWAITING_STICKER: 'AWAITING_STICKER',
+    AWAITING_TATTOO_PHOTO: 'AWAITING_TATTOO_PHOTO',
+    AWAITING_SONG: 'AWAITING_SONG',
+    AWAITING_COVER_PHOTO: 'AWAITING_COVER_PHOTO'
 };
 
 // 🎯 دستور /start
@@ -83,10 +83,8 @@ bot.on('text', (ctx) => {
     if (userSession.step === UserStep.AWAITING_FORM) {
         const userText = ctx.message.text;
         
-        if (userText.includes('اسم و اسم خاندان:') && 
-            userText.includes('نژاد:') && 
-            userText.includes('تاریخ تولد به میلادی:') && 
-            userText.includes('اسم پدر / مادر:')) {
+        // بررسی ساده‌تر فرم
+        if (userText.includes('اسم و اسم خاندان:') && userText.includes('نژاد:')) {
             
             userSession.userData.formData = userText;
             userSession.step = UserStep.AWAITING_STICKER;
@@ -96,24 +94,50 @@ bot.on('text', (ctx) => {
 
             return ctx.reply(confirmationMessage);
         } else {
-            return ctx.reply('⚠️ لطفا فرم را دقیقاً به همان شکل که ارائه شد کپی و پر کنید. مطمئن شوید همه بخش‌ها پر شده‌اند.');
+            return ctx.reply('⚠️ لطفا فرم را دقیقاً به همان شکل که ارائه شد کپی و پر کنید.');
         }
     }
 });
 
-// 🎞️ دریافت استیکر
+// 🎞️ دریافت استیکر - کد کاملاً اصلاح شده
 bot.on('sticker', (ctx) => {
+    console.log('استیکر دریافت شد:', ctx.message.sticker);
+    
     const userSession = ctx.session;
+    const sticker = ctx.message.sticker;
 
     if (userSession.step === UserStep.AWAITING_STICKER) {
-        if (ctx.message.sticker.is_animated === true) {
-            userSession.userData.stickerFileId = ctx.message.sticker.file_id;
+        // بررسی کامل استیکر متحرک
+        const isAnimated = sticker.is_animated || false;
+        const isVideo = sticker.is_video || false;
+        
+        console.log('ویژگی های استیکر:', {
+            is_animated: isAnimated,
+            is_video: isVideo,
+            set_name: sticker.set_name,
+            emoji: sticker.emoji
+        });
+
+        if (isAnimated === true) {
+            userSession.userData.stickerFileId = sticker.file_id;
             userSession.step = UserStep.AWAITING_TATTOO_PHOTO;
 
             return ctx.reply('✅ استیکر متحرک دریافت شد.\n+ حالا عکس خالکوبی/شاخ/بال یا اژدهای رولتون رو بفرستید 📸');
         } else {
-            return ctx.reply('⚠️ لطفاً یک **استیکر متحرک** ارسال کنید. استیکرهای معمولی قابل قبول نیستند.');
+            // پیام خطای دقیق‌تر
+            return ctx.reply(`⚠️ **استیکر متحرک ارسال کنید!**
+
+استیکر شما: ${sticker.emoji || '❓'}
+نوع: ${isAnimated ? 'متحرک' : 'عادی'}
+
+لطفاً یک استیکر متحرک (Animated Sticker) ارسال کنید. استیکرهای معمولی قابل قبول نیستند.
+
+💡 **راهنما:**
+- استیکرهای متحرک معمولاً دارای انیمیشن هستند
+- می‌توانید از ربات @StickerPackBot برای ساخت استیکر متحرک استفاده کنید`);
         }
+    } else {
+        return ctx.reply('⚠️ لطفاً ابتدا فرم را پر کنید و سپس استیکر ارسال کنید.');
     }
 });
 
@@ -129,7 +153,7 @@ bot.on('photo', (ctx) => {
     
     } else if (userSession.step === UserStep.AWAITING_COVER_PHOTO) {
         userSession.userData.coverPhotoFileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-        userSession.step = UserStep.COMPLETED;
+        userSession.step = 'COMPLETED';
 
         return finalizeApplication(ctx);
     }
@@ -148,13 +172,17 @@ bot.on('audio', (ctx) => {
     }
 });
 
-// 📤 تابع نهایی‌سازی و ارسال به گروه بررسی
+// 📤 تابع نهایی‌سازی
 async function finalizeApplication(ctx) {
     const userSession = ctx.session;
     const user = ctx.from;
 
     try {
-        const userDataMessage = `📬 **درخواست شناسنامه جدید**\n\n👤 **نام کاربر:** ${user.first_name || 'ندارد'} ${user.last_name || ''}\n📱 **آیدی:** @${user.username || 'ندارد'}\n🔢 **آیدی عددی:** ${user.id}\n\n📋 **اطلاعات ارسالی:**\n\`\`\`\n${userSession.userData.formData}\n\`\`\`\n\n🧪 **زیرکلاس:** نامشخص\n\n📥 **ارسال‌شده توسط:** ${user.first_name || 'کاربر'} (${user.id})`;
+        if (!REVIEW_GROUP_ID) {
+            throw new Error('REVIEW_GROUP_ID تنظیم نشده است');
+        }
+
+        const userDataMessage = `📬 **درخواست شناسنامه جدید**\n\n👤 **نام کاربر:** ${user.first_name || 'ندارد'} ${user.last_name || ''}\n📱 **آیدی:** @${user.username || 'ندارد'}\n🔢 **آیدی عددی:** ${user.id}\n\n📋 **اطلاعات ارسالی:**\n${userSession.userData.formData}\n\n🧪 **زیرکلاس:** نامشخص\n\n📥 **ارسال‌شده توسط:** ${user.first_name || 'کاربر'} (${user.id})`;
 
         const reviewKeyboard = Markup.inlineKeyboard([
             [Markup.button.callback('✅ قبول', `accept_${user.id}`), Markup.button.callback('❌ رد', `reject_${user.id}`)]
@@ -165,7 +193,7 @@ async function finalizeApplication(ctx) {
             parse_mode: 'Markdown'
         });
 
-        // ارسال مدیاها به گروه بررسی
+        // ارسال رسانه‌ها
         if (userSession.userData.stickerFileId) {
             await ctx.telegram.sendSticker(REVIEW_GROUP_ID, userSession.userData.stickerFileId, {
                 caption: '🎞 استیکر ارسالی کاربر'
@@ -177,26 +205,16 @@ async function finalizeApplication(ctx) {
                 caption: '🖼 عکس خالکوبی/شاخ/بال'
             });
         }
-        
-        if (userSession.userData.audioFileId) {
-            await ctx.telegram.sendAudio(REVIEW_GROUP_ID, userSession.userData.audioFileId, {
-                title: userSession.userData.audioTitle,
-                caption: '🎵 آهنگ انتخابی کاربر'
-            });
-        }
-        
-        if (userSession.userData.coverPhotoFileId) {
-            await ctx.telegram.sendPhoto(REVIEW_GROUP_ID, userSession.userData.coverPhotoFileId, {
-                caption: '🎼 کاور آهنگ'
-            });
-        }
 
         await ctx.reply('✅ اطلاعات شما ثبت شد و به زودی در چنل شناسنامه ثبت خواهد شد ، به اکلیس خوش آمدید');
-        ctx.session = {};
+        
+        // ریست سشن
+        ctx.session.step = UserStep.START;
+        ctx.session.userData = {};
 
     } catch (error) {
         console.error('خطا در ارسال به گروه بررسی:', error);
-        await ctx.reply('❌ متأسفانه مشکلی در ثبت اطلاعات پیش آمد. لطفاً بعداً مجدداً تلاش کنید.');
+        await ctx.reply('❌ مشکلی در ثبت اطلاعات پیش آمد. لطفاً بعداً مجدداً تلاش کنید.');
     }
 }
 
@@ -207,24 +225,20 @@ bot.action(/accept_(\d+)/, async (ctx) => {
 
     try {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        const originalText = ctx.callbackQuery.message.text;
-        await ctx.editMessageText(originalText + '\n\n--- ✅ **تایید شده توسط ادمین** ---', { 
-            parse_mode: 'Markdown' 
-        });
+        await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n--- ✅ **تایید شده** ---');
 
         await ctx.telegram.sendMessage(targetUserId, '🎉 **درخواست شناسنامه شما تایید شد!**\n\nبه خانواده اکلیس خوش آمدید.');
 
-        const acceptedMessage = `🎊 **کاربر جدید تایید شد**\n\n👤 نام: ${adminUser.first_name || 'ندارد'}\n🆔 آیدی عددی: ${adminUser.id}\n📧 آیدی کاربری: @${adminUser.username || 'ندارد'}\n\n✅ کاربر با موفقیت به جامعه اکلیس پیوست.`;
-        
-        await ctx.telegram.sendMessage(ACCEPTED_GROUP_ID, acceptedMessage, {
-            parse_mode: 'Markdown'
-        });
+        if (ACCEPTED_GROUP_ID) {
+            const acceptedMessage = `🎊 **کاربر جدید تایید شد**\n\n👤 نام: ${adminUser.first_name || 'ندارد'}\n🆔 آیدی عددی: ${adminUser.id}\n📧 آیدی کاربری: @${adminUser.username || 'ندارد'}`;
+            await ctx.telegram.sendMessage(ACCEPTED_GROUP_ID, acceptedMessage);
+        }
 
         await ctx.answerCbQuery('کاربر تایید شد.');
 
     } catch (error) {
         console.error('خطا در پردازش تایید:', error);
-        await ctx.answerCbQuery('خطا در پردازش درخواست');
+        await ctx.answerCbQuery('خطا در پردازش');
     }
 });
 
@@ -233,37 +247,33 @@ bot.action(/reject_(\d+)/, async (ctx) => {
 
     try {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        const originalText = ctx.callbackQuery.message.text;
-        await ctx.editMessageText(originalText + '\n\n--- ❌ **رد شده توسط ادمین** ---', { 
-            parse_mode: 'Markdown' 
-        });
+        await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n--- ❌ **رد شده** ---');
 
         await ctx.telegram.sendMessage(targetUserId, '❌ **متاسفانه درخواست شناسنامه شما رد شد.**');
-
         await ctx.answerCbQuery('کاربر رد شد.');
 
     } catch (error) {
         console.error('خطا در پردازش رد:', error);
-        await ctx.answerCbQuery('خطا در پردازش درخواست');
+        await ctx.answerCbQuery('خطا در پردازش');
     }
 });
 
-// 🚀 راه‌اندازی ربات تلگرام
+// راه‌اندازی ربات تلگرام
 bot.launch().then(() => {
-    console.log('✅ ربات تلگرام راه‌اندازی شد.');
+    console.log('✅ ربات تلگرام راه‌اندازی شد');
 }).catch((err) => {
-    console.error('خطا در راه‌اندازی ربات تلگرام:', err);
+    console.error('خطا در راه‌اندازی ربات:', err);
 });
 
-// 🌐 راه‌اندازی سرور اکسپرس برای Render
+// راه‌اندازی سرور اکسپرس برای Render
 app.get('/', (req, res) => {
   res.send('ربات اکلیس در حال اجراست!');
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ سرور کمکی روی پورت ${PORT} در حال اجراست.`);
+  console.log(`✅ سرور روی پورت ${PORT} در حال اجراست`);
 });
 
-// مدیریت خاموشی صحیح
+// مدیریت خاموشی
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

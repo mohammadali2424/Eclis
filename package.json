@@ -1,11 +1,10 @@
 {
   "name": "eclis-registery-bot",
-  "version": "2.2.0",
-  "description": "Telegram bot for Eclis character registration - Optimized for concurrent users",
+  "version": "4.0.0",
+  "description": "Telegram bot for Eclis character registration with database",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "nodemon bot.js"
+    "start": "node bot.js"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
@@ -14,11 +13,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "keywords": [
-    "telegram",
-    "bot",
-    "game",
-    "registration"
-  ]
+  }
 }

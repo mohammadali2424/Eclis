@@ -1,4 +1,4 @@
-const { Telegraf, Scenes: { WizardScene }, session, Markup, Stage } = require('telegraf');
+const { Telegraf, Scenes: { WizardScene, Stage }, session, Markup } = require('telegraf');
 const express = require('express');
 const dotenv = require('dotenv');
 
@@ -13,21 +13,14 @@ const config = {
   port: process.env.PORT || 3000,
   webhookUrl: process.env.WEBHOOK_URL || "https://eclis-registery-bot.onrender.com/webhook",
   maxConcurrentUsers: 3,
-  sessionTimeout: 60 * 60 * 1000, // 1 hour
-  cleanupInterval: 30 * 60 * 1000 // 30 minutes
+  sessionTimeout: 60 * 60 * 1000,
+  cleanupInterval: 30 * 60 * 1000
 };
 
 if (!config.token) {
   console.error('❌ BOT_TOKEN is required in environment variables!');
   process.exit(1);
 }
-
-// ===========================
-// Event Emitter for better event handling
-// ===========================
-const EventEmitter = require('events');
-class BotEventEmitter extends EventEmitter {}
-const botEvents = new BotEventEmitter();
 
 // ===========================
 // Logger Service
@@ -51,78 +44,6 @@ class Logger {
 }
 
 // ===========================
-// Queue Service
-// ===========================
-class MessageQueue {
-  constructor(concurrency = 3) {
-    this.concurrency = concurrency;
-    this.active = 0;
-    this.queue = [];
-    this.stats = {
-      processed: 0,
-      failed: 0,
-      total: 0
-    };
-  }
-
-  async add(task, description = 'task') {
-    this.stats.total++;
-    
-    return new Promise((resolve, reject) => {
-      this.queue.push({ 
-        task, 
-        resolve, 
-        reject, 
-        description,
-        timestamp: Date.now()
-      });
-      this._next();
-    });
-  }
-
-  _next() {
-    if (this.active >= this.concurrency || this.queue.length === 0) {
-      return;
-    }
-
-    this.active++;
-    const { task, resolve, reject, description } = this.queue.shift();
-
-    const next = () => {
-      this.active--;
-      this._next();
-    };
-
-    Promise.resolve(task())
-      .then((result) => {
-        this.stats.processed++;
-        botEvents.emit('queue:success', { description });
-        resolve(result);
-        next();
-      })
-      .catch((error) => {
-        this.stats.failed++;
-        botEvents.emit('queue:error', { description, error });
-        reject(error);
-        next();
-      });
-  }
-
-  getStats() {
-    return {
-      pending: this.queue.length,
-      active: this.active,
-      ...this.stats
-    };
-  }
-
-  clear() {
-    this.queue = [];
-    this.active = 0;
-  }
-}
-
-// ===========================
 // User Data Service
 // ===========================
 class UserDataService {
@@ -141,8 +62,6 @@ class UserDataService {
     };
 
     this.userData.set(userId, userData);
-    botEvents.emit('user:updated', { userId, data: userData });
-    
     return userData;
   }
 
@@ -156,19 +75,11 @@ class UserDataService {
   }
 
   delete(userId) {
-    const existed = this.userData.has(userId);
-    if (existed) {
-      botEvents.emit('user:deleted', { userId });
-    }
     return this.userData.delete(userId);
   }
 
   exists(userId) {
     return this.userData.has(userId);
-  }
-
-  getAll() {
-    return Array.from(this.userData.entries());
   }
 
   cleanup() {
@@ -182,32 +93,18 @@ class UserDataService {
         Logger.info(`Cleaned up expired user session: ${userId}`);
       }
     }
-
-    if (cleanedCount > 0) {
-      botEvents.emit('cleanup:completed', { cleanedCount });
-    }
-  }
-
-  getStats() {
-    return {
-      totalUsers: this.userData.size,
-      activeUsers: Array.from(this.userData.values()).filter(user => 
-        Date.now() - user.lastActivity < config.sessionTimeout
-      ).length
-    };
   }
 }
 
 // ===========================
-// Form Validation Service
+// Form Validation Service - بدون زیرکلاس
 // ===========================
 class FormService {
   static requiredFields = [
     "اسم و اسم خاندان:",
     "نژاد:",
     "تاریخ تولد به میلادی:",
-    "اسم پدر / مادر:",
-    "زیر کلاس:"
+    "اسم پدر / مادر:"
   ];
 
   static validate(formText) {
@@ -217,8 +114,8 @@ class FormService {
 
     const lines = formText.trim().split('\n').filter(line => line.trim());
     
-    if (lines.length < 5) {
-      return { isValid: false, error: 'فرم باید حداقل ۵ خط داشته باشد' };
+    if (lines.length < 4) {
+      return { isValid: false, error: 'فرم باید حداقل ۴ خط داشته باشد' };
     }
 
     const missingFields = this.requiredFields.filter(field => 
@@ -232,7 +129,6 @@ class FormService {
       };
     }
 
-    // بررسی کامل بودن فیلدها
     const parsed = this.parse(formText);
     const emptyFields = [];
     
@@ -240,7 +136,6 @@ class FormService {
     if (!parsed.race || parsed.race === "نامشخص") emptyFields.push("نژاد");
     if (!parsed.birth || parsed.birth === "نامشخص") emptyFields.push("تاریخ تولد");
     if (!parsed.parents || parsed.parents === "نامشخص") emptyFields.push("اسم پدر/مادر");
-    if (!parsed.subclass || parsed.subclass === "نامشخص") emptyFields.push("زیر کلاس");
 
     if (emptyFields.length > 0) {
       return { 
@@ -259,11 +154,9 @@ class FormService {
       race: "نامشخص",
       birth: "نامشخص",
       parents: "نامشخص",
-      subclass: "نامشخص",
       rawText: formText
     };
     
-    // پارس بر اساس نام فیلدها نه ترتیب
     lines.forEach(line => {
       const trimmedLine = line.trim();
       if (trimmedLine.includes("اسم و اسم خاندان:")) {
@@ -274,8 +167,6 @@ class FormService {
         result.birth = trimmedLine.replace("تاریخ تولد به میلادی:", "").trim();
       } else if (trimmedLine.includes("اسم پدر / مادر:")) {
         result.parents = trimmedLine.replace("اسم پدر / مادر:", "").trim();
-      } else if (trimmedLine.includes("زیر ��لاس:")) {
-        result.subclass = trimmedLine.replace("زیر کلاس:", "").trim();
       }
     });
     
@@ -287,9 +178,9 @@ class FormService {
       `👤 نام و خاندان: ${parsedData.name}\n` +
       `🧬 نژاد: ${parsedData.race}\n` +
       `📅 تاریخ تولد: ${parsedData.birth}\n` +
-      `👨‍👩‍👧 والدین: ${parsedData.parents}\n` +
-      `⚗️ زیرکلاس: ${parsedData.subclass}\n\n` +
-      `📨 ارسال‌شده توسط: @${username || 'بدون آیدی'}`
+      `👨‍👩‍👧 والدین: ${parsedData.parents}\n\n` +
+      `📨 ارسال‌شده توسط: @${username || 'بدون آیدی'}\n` +
+      `🌐 کانال: @Eclis_Darkness`
     );
   }
 }
@@ -351,7 +242,6 @@ class MediaService {
 // ===========================
 // Initialize Services
 // ===========================
-const messageQueue = new MessageQueue(config.maxConcurrentUsers);
 const userDataService = new UserDataService();
 
 // ===========================
@@ -366,7 +256,7 @@ const expressApp = express();
 const Keyboards = {
   main: Markup.keyboard([
     ['📄 ساخت شناسنامه'],
-    ['🏦 ورود به بانک', 'ℹ️ راهنما']
+    ['ℹ️ راهنما']
   ]).resize(),
 
   cancel: Markup.keyboard([
@@ -377,17 +267,12 @@ const Keyboards = {
 };
 
 // ===========================
-// Message Templates
+// Message Templates - بدون زیرکلاس
 // ===========================
 const Messages = {
   welcome: `
 ✨ خوش اومدین به سرزمین اکلیس!
 من درویدم، دستیار شما برای ثبت‌نام شخصیت‌ها.
-
-🔸 *امکانات ربات:*
-• ثبت شناسنامه شخصیت
-• مدیریت اطلاعات بازی
-• سیستم بانکی (به زودی)
 
 برای شروع یکی از گزینه‌های زیر رو انتخاب کنید:
   `.trim(),
@@ -396,19 +281,14 @@ const Messages = {
 📖 *راهنمای ربات اکلیس*
 
 🔹 *ثبت شناسنامه:*
-1️⃣ روی "ساخت شناسنامه" کلیک کنید
-2️⃣ فرم رو پر کنید و ارسال کنید
-3️⃣ استیکر یا عکس شخصیت رو بفرستید
-4️⃣ آهنگ مورد علاقه رو ارسال کنید
-5️⃣ کاور آهنگ رو ارسال کنید
+روی "ساخت شناسنامه" کلیک کنید و مراحل رو دنبال کنید
 
 🔹 *دستورات:*
 /start - شروع مجدد
 /cancel - لغو عملیات
 /help - نمایش این راهنما
-/status - وضعیت ربات
 
-📞 پشتیبانی: @EclisSupport
+🌐 کانال: @Eclis_Darkness
   `.trim(),
 
   formTemplate: `
@@ -419,7 +299,6 @@ const Messages = {
 🪶 نژاد:
 🪶 تاریخ تولد به میلادی:
 🪶 اسم پدر / مادر:
-🪶 زیر کلاس:
   `.trim(),
 
   processing: `
@@ -430,7 +309,7 @@ const Messages = {
   success: `
 ✅ *عملیات موفق!*
 اطلاعات شما با موفقیت ثبت شد.
-منتظر تأیید نهایی باشید.
+منتظر تأیید نهایی در کانال @Eclis_Darkness باشید.
 
 🆔 کد پیگیری: ${Math.random().toString(36).substr(2, 8).toUpperCase()}
   `.trim(),
@@ -442,7 +321,7 @@ const Messages = {
 };
 
 // ===========================
-// Registration Wizard Scene
+// Registration Wizard Scene - بدون زیرکلاس
 // ===========================
 const registrationWizard = new WizardScene(
   'registrationWizard',
@@ -478,7 +357,6 @@ const registrationWizard = new WizardScene(
   // Step 2: Validate and Store Form
   async (ctx) => {
     try {
-      // Handle cancellation
       if (ctx.message.text === '❌ انصراف') {
         await ctx.reply(Messages.cancelled, Keyboards.main);
         userDataService.delete(ctx.from.id);
@@ -496,7 +374,6 @@ const registrationWizard = new WizardScene(
         return ctx.wizard.selectStep(ctx.wizard.cursor);
       }
 
-      // Store form data
       const user = userDataService.get(ctx.from.id) || {};
       user.formData = FormService.parse(ctx.message.text);
       user.rawForm = ctx.message.text;
@@ -620,7 +497,6 @@ const registrationWizard = new WizardScene(
 
       await ctx.reply(Messages.processing);
 
-      // Send all data to group
       try {
         await sendUserDataToGroup(ctx, user);
         
@@ -632,13 +508,6 @@ const registrationWizard = new WizardScene(
           }
         );
 
-        // Log successful registration
-        botEvents.emit('registration:success', {
-          userId: ctx.from.id,
-          username: ctx.from.username,
-          characterName: user.formData.name
-        });
-
         Logger.success('Registration completed successfully', {
           userId: ctx.from.id,
           username: ctx.from.username,
@@ -648,7 +517,7 @@ const registrationWizard = new WizardScene(
       } catch (error) {
         Logger.error('Error sending data to group', error);
         await ctx.reply(
-          '❌ خطایی در ارسال اطلاعات به گروه پیش آمد. اطلاعات شما ذخیره شد، لطفاً با پشتیبانی تماس بگیرید.\n\n@EclisSupport',
+          '❌ خطایی در ارسال اطلاعات به گروه پیش آمد.',
           Keyboards.main
         );
       }
@@ -670,34 +539,18 @@ async function sendUserDataToGroup(ctx, user) {
   try {
     const formattedForm = FormService.format(user.formData, ctx.from.username);
 
-    // Send form data
-    await messageQueue.add(
-      () => ctx.telegram.sendMessage(config.groupId, `📜 شناسنامه جدید\n\n${formattedForm}`),
-      'send_form_data'
-    );
+    await ctx.telegram.sendMessage(config.groupId, `📜 شناسنامه جدید\n\n${formattedForm}`);
 
-    // Send character media
     if (user.characterMedia) {
-      await messageQueue.add(
-        () => MediaService.sendMediaToGroup(ctx, user.characterMedia, '🎭 شخصیت'),
-        'send_character_media'
-      );
+      await MediaService.sendMediaToGroup(ctx, user.characterMedia, '🎭 شخصیت');
     }
 
-    // Send favorite song
     if (user.favoriteSong) {
-      await messageQueue.add(
-        () => MediaService.sendMediaToGroup(ctx, user.favoriteSong, '🎵 آهنگ مورد علاقه'),
-        'send_favorite_song'
-      );
+      await MediaService.sendMediaToGroup(ctx, user.favoriteSong, '🎵 آهنگ مورد علاقه');
     }
 
-    // Send song cover
     if (user.songCover) {
-      await messageQueue.add(
-        () => MediaService.sendMediaToGroup(ctx, user.songCover, '🎨 کاور آهنگ'),
-        'send_song_cover'
-      );
+      await MediaService.sendMediaToGroup(ctx, user.songCover, '🎨 کاور آهنگ');
     }
 
     Logger.success('User data sent to group successfully', {
@@ -707,47 +560,17 @@ async function sendUserDataToGroup(ctx, user) {
 
   } catch (error) {
     Logger.error('Error sending user data to group', error);
-    
-    // اطلاع به کاربر درباره خطا
-    await ctx.reply(
-      '⚠️ برخی اطلاعات به گروه ارسال نشد. لطفاً با پشتیبانی تماس بگیرید.',
-      Keyboards.main
-    );
-    
     throw error;
   }
 }
 
 // ===========================
-// Event Handlers
+// Setup Stage and Middleware - اصلاح شده
 // ===========================
-botEvents.on('user:updated', ({ userId, data }) => {
-  Logger.info(`User data updated: ${userId}`, {
-    step: data.currentStep,
-    hasForm: !!data.formData,
-    hasMedia: !!data.characterMedia
-  });
-});
+const stage = new Stage([registrationWizard]);
 
-botEvents.on('registration:success', ({ userId, username, characterName }) => {
-  Logger.success(`New registration completed`, {
-    userId,
-    username,
-    characterName
-  });
-});
-
-botEvents.on('queue:success', ({ description }) => {
-  Logger.info(`Queue task completed: ${description}`);
-});
-
-botEvents.on('queue:error', ({ description, error }) => {
-  Logger.error(`Queue task failed: ${description}`, error);
-});
-
-botEvents.on('cleanup:completed', ({ cleanedCount }) => {
-  Logger.info(`Cleanup completed`, { cleanedCount });
-});
+bot.use(session());
+bot.use(stage.middleware());
 
 // ===========================
 // Bot Command Handlers
@@ -763,11 +586,6 @@ bot.start(async (ctx) => {
         ...Keyboards.main 
       }
     );
-    
-    Logger.info('User started bot', {
-      userId: ctx.from.id,
-      username: ctx.from.username
-    });
   } catch (error) {
     Logger.error('Error in start command', error);
   }
@@ -788,35 +606,6 @@ bot.help(async (ctx) => {
   }
 });
 
-// Status command
-bot.command('status', async (ctx) => {
-  try {
-    const queueStats = messageQueue.getStats();
-    const userStats = userDataService.getStats();
-    
-    const statusMessage = `
-📊 *وضعیت ربات*
-
-👥 *کاربران:*
-• فعال: ${userStats.activeUsers}
-• کل: ${userStats.totalUsers}
-
-📨 *صف ارسال:*
-• در حال پردازش: ${queueStats.active}
-• در انتظار: ${queueStats.pending}
-• موفق: ${queueStats.processed}
-• ناموفق: ${queueStats.failed}
-
-⏱ *آپتایم: ${Math.floor(process.uptime())} ثانیه*
-    `.trim();
-
-    await ctx.reply(statusMessage, { parse_mode: 'Markdown' });
-  } catch (error) {
-    Logger.error('Error in status command', error);
-    await ctx.reply('❌ خطایی در دریافت وضعیت پیش آمد.');
-  }
-});
-
 // Cancel command
 bot.command('cancel', async (ctx) => {
   try {
@@ -824,7 +613,6 @@ bot.command('cancel', async (ctx) => {
       userDataService.delete(ctx.from.id);
       await ctx.reply(Messages.cancelled, Keyboards.main);
       await ctx.scene.leave();
-      Logger.info('User cancelled operation', { userId: ctx.from.id });
     } else {
       await ctx.reply('⚠️ در حال حاضر در حال ثبت‌نام نیستید.', Keyboards.main);
     }
@@ -836,10 +624,8 @@ bot.command('cancel', async (ctx) => {
 // Handle registration button
 bot.hears('📄 ساخت شناسنامه', async (ctx) => {
   try {
-    // Clear any existing user data
     userDataService.delete(ctx.from.id);
     
-    // Initialize new user session
     userDataService.set(ctx.from.id, {
       startedAt: Date.now(),
       currentStep: 'started'
@@ -855,15 +641,6 @@ bot.hears('📄 ساخت شناسنامه', async (ctx) => {
   } catch (error) {
     Logger.error('Error starting registration', error);
     await ctx.reply('❌ خطایی در شروع ثبت‌نام پیش آمد. لطفاً دوباره تلاش کنید.', Keyboards.main);
-  }
-});
-
-// Handle bank button
-bot.hears('🏦 ورود به بانک', async (ctx) => {
-  try {
-    await ctx.reply('🚧 سیستم بانکی به زودی راه‌اندازی خواهد شد.', Keyboards.main);
-  } catch (error) {
-    Logger.error('Error in bank button', error);
   }
 });
 
@@ -895,14 +672,6 @@ bot.on('message', async (ctx) => {
     Logger.error('Error in message handler', error);
   }
 });
-
-// ===========================
-// Setup Stage and Middleware
-// ===========================
-const stage = new Stage([registrationWizard]);
-
-bot.use(session());
-bot.use(stage.middleware());
 
 // Global error handler
 bot.catch(async (err, ctx) => {
@@ -940,28 +709,12 @@ expressApp.post('/webhook', async (req, res) => {
 
 // Health check endpoint
 expressApp.get('/', (req, res) => {
-  const stats = {
+  res.json({
     status: '✅ Bot is running',
-    service: 'Eclis Registry Bot - Fixed Version',
+    service: 'Eclis Registry Bot',
     timestamp: new Date().toISOString(),
-    version: '3.1.0',
-    queue: messageQueue.getStats(),
-    users: userDataService.getStats(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage()
-  };
-
-  res.json(stats);
-});
-
-// Queue status endpoint
-expressApp.get('/queue', (req, res) => {
-  res.json(messageQueue.getStats());
-});
-
-// Users status endpoint
-expressApp.get('/users', (req, res) => {
-  res.json(userDataService.getStats());
+    version: '3.2.0'
+  });
 });
 
 // ===========================
@@ -986,16 +739,7 @@ async function startBot() {
       Logger.success('Bot started with polling');
     }
 
-    Logger.success('Eclis Registry Bot v3.1 is ready!', {
-      maxConcurrentUsers: config.maxConcurrentUsers,
-      environment: process.env.NODE_ENV || 'development'
-    });
-
-    // Log initial stats
-    Logger.info('Initial system status', {
-      queue: messageQueue.getStats(),
-      users: userDataService.getStats()
-    });
+    Logger.success('Eclis Registry Bot v3.2 is ready!');
 
   } catch (error) {
     Logger.error('Error starting bot', error);
@@ -1010,19 +754,11 @@ function setupGracefulShutdown() {
   const shutdown = async (signal) => {
     Logger.info(`Received ${signal}, shutting down gracefully...`);
     
-    // Stop receiving new updates
     bot.stop(signal);
     
-    // Clear intervals
     if (userDataService.cleanupInterval) {
       clearInterval(userDataService.cleanupInterval);
     }
-    
-    // Log final stats
-    Logger.info('Final statistics', {
-      queue: messageQueue.getStats(),
-      users: userDataService.getStats()
-    });
     
     setTimeout(() => {
       Logger.success('Shutdown completed');
@@ -1039,4 +775,3 @@ function setupGracefulShutdown() {
 // ===========================
 setupGracefulShutdown();
 startBot();
-

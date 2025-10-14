@@ -1,7 +1,7 @@
 const { Telegraf, Markup, session } = require('telegraf');
 
 // توکن ربات خود را از @BotFather دریافت و اینجا قرار دهید
-const BOT_TOKEN = 'YOUR_BOT_TOKEN_HERE';
+const BOT_TOKEN = '7971581878:AAEgltaGBY9mOCEgBOi2syPkFlQQWTcxhlU';
 
 // آیدی عددی گروه‌ها را قرار دهید (مقادیر منفی برای گروه‌ها)
 const REVIEW_GROUP_ID = -1002123456789; // گروه بررسی درخواست‌ها
@@ -303,3 +303,4 @@ process.once('SIGTERM', () => {
     console.log('🛑 در حال خاموش کردن ربات...');
     bot.stop('SIGTERM');
 });
+

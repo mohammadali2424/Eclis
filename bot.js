@@ -24,6 +24,26 @@ const app = express();
 app.use(express.json());
 
 const userSessions = new Map();
+const approvedUsers = new Map(); // ذخیره کاربران تایید شده
+
+// ✅ تابع برای تولید شماره شناسنامه
+function generateCertificateNumber() {
+  return `#${approvedUsers.size + 1}`;
+}
+
+// ✅ تابع برای ذخیره کاربر تایید شده
+function saveApprovedUser(userId, userData) {
+  approvedUsers.set(userId, {
+    ...userData,
+    certificateNumber: generateCertificateNumber(),
+    approvedAt: new Date().toISOString()
+  });
+}
+
+// ✅ تابع برای بررسی آیا کاربر قبلاً ثبت نام کرده
+function isUserRegistered(userId) {
+  return approvedUsers.has(userId);
+}
 
 // ✅ تعریف صحنه برای جمع‌آوری اطلاعات
 const userInfoWizard = new Scenes.WizardScene(
@@ -32,6 +52,18 @@ const userInfoWizard = new Scenes.WizardScene(
   // Step 1: شروع و نمایش پیام خوش آمدگویی
   async (ctx) => {
     try {
+      // بررسی آیا کاربر قبلاً ثبت نام کرده
+      if (isUserRegistered(ctx.from.id)) {
+        const userData = approvedUsers.get(ctx.from.id);
+        await ctx.reply(
+          `❌ شما قبلاً شناسنامه ساخته‌اید!\n\n` +
+          `📋 شماره شناسنامه شما: ${userData.certificateNumber}\n` +
+          `✅ تاریخ تایید: ${new Date(userData.approvedAt).toLocaleDateString('fa-IR')}\n\n` +
+          `اگر مشکلی وجود دارد با پشتیبانی تماس بگیرید.`
+        );
+        return ctx.scene.leave();
+      }
+
       const welcomeName = ctx.from.first_name || 'کاربر';
       
       await ctx.reply(
@@ -80,7 +112,7 @@ const userInfoWizard = new Scenes.WizardScene(
       return ctx.wizard.next();
     } catch (error) {
       console.error('Error in step 2:', error);
-      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوبا��ه تلاش کنید.');
       return ctx.scene.leave();
     }
   },
@@ -160,7 +192,7 @@ const userInfoWizard = new Scenes.WizardScene(
       const userData = userSessions.get(ctx.from.id);
       userData.songFileId = ctx.message.audio.file_id;
 
-      await ctx.reply('+ حالا یک عکس برای کاور آهنگ بفرستید 🎼');
+      await ctx.reply('+ حالا یک ع��س برای کاور آهنگ بفرستید 🎼');
       return ctx.wizard.next();
     } catch (error) {
       console.error('Error in step 6:', error);
@@ -193,9 +225,14 @@ const userInfoWizard = new Scenes.WizardScene(
         `📅 تاریخ ارسال: ${userData.submitDate}`;
 
       const approveButtons = Markup.inlineKeyboard([
-        [Markup.button.callback('✅ قبول', 'approve_user')],
-        [Markup.button.callback('❌ رد', 'reject_user')]
+        [
+          Markup.button.callback('✅ قبول', `approve_${ctx.from.id}`),
+          Markup.button.callback('❌ رد', `reject_${ctx.from.id}`)
+        ]
       ]);
+
+      // ذخیره داده کاربر در session برای استفاده در callback
+      userSessions.set(ctx.from.id, userData);
 
       await ctx.telegram.sendMessage(ADMIN_GROUP_ID, adminMessage, approveButtons);
 
@@ -218,7 +255,6 @@ const userInfoWizard = new Scenes.WizardScene(
         Markup.removeKeyboard()
       );
 
-      userSessions.delete(ctx.from.id);
       return ctx.scene.leave();
     } catch (error) {
       console.error('Error in step 7:', error);
@@ -234,18 +270,61 @@ bot.use(session());
 bot.use(stage.middleware());
 
 // ✅ هندلر دکمه‌های تایید/رد
-bot.action('approve_user', async (ctx) => {
+bot.action(/approve_(\d+)/, async (ctx) => {
   try {
+    const userId = ctx.match[1];
+    const userData = userSessions.get(parseInt(userId));
+    
+    if (!userData) {
+      await ctx.answerCbQuery('❌ اطلاعات کاربر یافت نشد');
+      return;
+    }
+
     await ctx.answerCbQuery('کاربر تایید شد ✅');
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     
-    const originalMessage = ctx.update.callback_query.message;
-    const successMessage = 
-      `🎉 کاربر جدید تایید شد!\n\n` +
-      `${originalMessage.text}\n\n` +
-      `وضعیت: ✅ تایید شده`;
+    // تولید شماره شناسنامه و ذخیره کاربر
+    const certificateNumber = generateCertificateNumber();
+    saveApprovedUser(parseInt(userId), userData);
     
-    await ctx.telegram.sendMessage(CHANNEL_ID, successMessage);
+    // ارسال به چنل با هشتگ
+    const channelMessage = 
+      `${certificateNumber}\n\n` +
+      `👤 نام: 🪶 ${userData.firstName}\n` +
+      `🆔 آیدی: @${userData.username}\n` +
+      `📊 آیدی عددی: ${userData.userId}\n\n` +
+      `📋 اطلاعات شناسنامه:\n${userData.profileText}\n\n` +
+      `📅 تاریخ ثبت: ${userData.submitDate}\n` +
+      `🏷️ شماره شناسنامه: ${certificateNumber}`;
+
+    // ارسال پیام به چنل
+    await ctx.telegram.sendMessage(CHANNEL_ID, channelMessage);
+    
+    // ارسال رسانه‌ها به چنل
+    if (userData.stickerFileId) {
+      await ctx.telegram.sendSticker(CHANNEL_ID, userData.stickerFileId);
+    }
+    if (userData.tattooPhotoId) {
+      await ctx.telegram.sendPhoto(CHANNEL_ID, userData.tattooPhotoId);
+    }
+    if (userData.songFileId) {
+      await ctx.telegram.sendAudio(CHANNEL_ID, userData.songFileId);
+    }
+    if (userData.coverPhotoId && userData.coverPhotoId.file_id) {
+      await ctx.telegram.sendPhoto(CHANNEL_ID, userData.coverPhotoId.file_id);
+    }
+
+    // پیام موفقیت به ادمین
+    const successMessage = 
+      `✅ کاربر با موفقیت تایید شد!\n\n` +
+      `👤 نام: ${userData.firstName}\n` +
+      `🆔 آیدی: @${userData.username}\n` +
+      `🏷️ شماره شناسنامه: ${certificateNumber}`;
+    
+    await ctx.reply(successMessage);
+    
+    // پاک کردن session کاربر
+    userSessions.delete(parseInt(userId));
     
   } catch (error) {
     console.error('Error approving user:', error);
@@ -253,20 +332,23 @@ bot.action('approve_user', async (ctx) => {
   }
 });
 
-bot.action('reject_user', async (ctx) => {
+bot.action(/reject_(\d+)/, async (ctx) => {
   try {
+    const userId = ctx.match[1];
+    const userData = userSessions.get(parseInt(userId));
+    
     await ctx.answerCbQuery('کاربر رد شد ❌');
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     
-    const originalMessage = ctx.update.callback_query.message;
-    const userMatch = originalMessage.text.match(/آیدی عددی: (\d+)/);
-    const userId = userMatch ? userMatch[1] : 'نامشخص';
-    
     const rejectMessage = 
       `❌ درخواست کاربر رد شد\n\n` +
-      `آیدی عددی: ${userId}`;
+      `👤 نام: ${userData?.firstName || 'نامشخص'}\n` +
+      `🆔 آیدی عددی: ${userId}`;
     
     await ctx.telegram.sendMessage(ADMIN_GROUP_ID, rejectMessage);
+    
+    // پاک کردن session کاربر
+    userSessions.delete(parseInt(userId));
     
   } catch (error) {
     console.error('Error rejecting user:', error);
@@ -284,8 +366,29 @@ bot.start(async (ctx) => {
   }
 });
 
+// ✅ هندلر وضعیت
+bot.command('status', async (ctx) => {
+  if (isUserRegistered(ctx.from.id)) {
+    const userData = approvedUsers.get(ctx.from.id);
+    await ctx.reply(
+      `✅ شما قبلاً شناسنامه دارید!\n\n` +
+      `🏷️ شماره شناسنامه: ${userData.certificateNumber}\n` +
+      `📅 تاریخ تایید: ${new Date(userData.approvedAt).toLocaleDateString('fa-IR')}`
+    );
+  } else {
+    await ctx.reply('❌ شما هنوز شناسنامه ندارید. از /start استفاده کنید.');
+  }
+});
+
 // ✅ هندلر کمک
-bot.help((ctx) => ctx.reply('برای شروع دوباره از دستور /start استفاده کنید.'));
+bot.help((ctx) => 
+  ctx.reply(
+    'دستورات موجود:\n' +
+    '/start - شروع ثبت نام\n' +
+    '/status - بررسی وضعیت شناسنامه\n' +
+    '/help - راهنمایی'
+  )
+);
 
 // ✅ راه‌اندازی ربات برای Render
 const startBot = async () => {
@@ -313,13 +416,18 @@ const startBot = async () => {
       
       // Route اصلی برای سلامت سرویس
       app.get('/', (req, res) => {
-        res.json({ status: 'Bot is running!', timestamp: new Date().toISOString() });
+        res.json({ 
+          status: 'Bot is running!', 
+          approvedUsers: approvedUsers.size,
+          timestamp: new Date().toISOString() 
+        });
       });
       
       // راه‌اندازی سرور
       app.listen(PORT, '0.0.0.0', () => {
         console.log(`✅ Server is running on port ${PORT}`);
         console.log(`✅ Bot is running in webhook mode`);
+        console.log(`✅ Approved users count: ${approvedUsers.size}`);
       });
       
     } else {

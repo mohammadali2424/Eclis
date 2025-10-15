@@ -3,7 +3,7 @@ const express = require('express');
 
 // ✅ تنظیم توکن ربات از متغیر محیطی
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID;
+const TARGET_GROUP_ID = process.env.TARGET_GROUP_ID; // تغییر نام به GROUP_ID
 const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID;
 
 // ✅ بررسی وجود توکن‌های ضروری
@@ -12,8 +12,8 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-if (!CHANNEL_ID || !ADMIN_GROUP_ID) {
-  console.error('❌ Error: CHANNEL_ID or ADMIN_GROUP_ID is not set.');
+if (!TARGET_GROUP_ID || !ADMIN_GROUP_ID) {
+  console.error('❌ Error: TARGET_GROUP_ID or ADMIN_GROUP_ID is not set.');
   process.exit(1);
 }
 
@@ -24,7 +24,7 @@ const app = express();
 app.use(express.json());
 
 const userSessions = new Map();
-const approvedUsers = new Map(); // ذخیره کاربران تایید شده
+const approvedUsers = new Map();
 
 // ✅ تابع برای تولید شماره شناسنامه
 function generateCertificateNumber() {
@@ -43,6 +43,50 @@ function saveApprovedUser(userId, userData) {
 // ✅ تابع برای بررسی آیا کاربر قبلاً ثبت نام کرده
 function isUserRegistered(userId) {
   return approvedUsers.has(userId);
+}
+
+// ✅ تابع برای ارسال پیام به گروه
+async function sendToGroup(groupId, message, options = {}) {
+  try {
+    await bot.telegram.sendMessage(groupId, message, options);
+    return true;
+  } catch (error) {
+    console.error('Error sending to group:', error);
+    return false;
+  }
+}
+
+// ✅ تابع برای ارسال استیکر به گروه
+async function sendStickerToGroup(groupId, fileId) {
+  try {
+    await bot.telegram.sendSticker(groupId, fileId);
+    return true;
+  } catch (error) {
+    console.error('Error sending sticker to group:', error);
+    return false;
+  }
+}
+
+// ✅ تابع برای ارسال عکس به گروه
+async function sendPhotoToGroup(groupId, fileId) {
+  try {
+    await bot.telegram.sendPhoto(groupId, fileId);
+    return true;
+  } catch (error) {
+    console.error('Error sending photo to group:', error);
+    return false;
+  }
+}
+
+// ✅ تابع برای ارسال آهنگ به گروه
+async function sendAudioToGroup(groupId, fileId) {
+  try {
+    await bot.telegram.sendAudio(groupId, fileId);
+    return true;
+  } catch (error) {
+    console.error('Error sending audio to group:', error);
+    return false;
+  }
 }
 
 // ✅ تعریف صحنه برای جمع‌آوری اطلاعات
@@ -89,6 +133,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
+  // Steps 2-7 بدون تغییر (همان کد قبلی)
   // Step 2: ایجاد فرم و نمایش قالب
   async (ctx) => {
     if (!ctx.message || !ctx.message.text || !ctx.message.text.includes('ساخت شناسنامه')) {
@@ -112,7 +157,7 @@ const userInfoWizard = new Scenes.WizardScene(
       return ctx.wizard.next();
     } catch (error) {
       console.error('Error in step 2:', error);
-      await ctx.reply('⚡ خطایی رخ داد. لطفا دوبا��ه تلاش کنید.');
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
       return ctx.scene.leave();
     }
   },
@@ -192,7 +237,7 @@ const userInfoWizard = new Scenes.WizardScene(
       const userData = userSessions.get(ctx.from.id);
       userData.songFileId = ctx.message.audio.file_id;
 
-      await ctx.reply('+ حالا یک ع��س برای کاور آهنگ بفرستید 🎼');
+      await ctx.reply('+ حالا یک عکس برای کاور آهنگ بفرستید 🎼');
       return ctx.wizard.next();
     } catch (error) {
       console.error('Error in step 6:', error);
@@ -234,24 +279,28 @@ const userInfoWizard = new Scenes.WizardScene(
       // ذخیره داده کاربر در session برای استفاده در callback
       userSessions.set(ctx.from.id, userData);
 
-      await ctx.telegram.sendMessage(ADMIN_GROUP_ID, adminMessage, approveButtons);
+      // ارسال به گروه ادمین
+      const sentMessage = await bot.telegram.sendMessage(ADMIN_GROUP_ID, adminMessage, approveButtons);
+      
+      // ذخیره message_id برای استفاده بعدی
+      userData.adminMessageId = sentMessage.message_id;
 
-      // ارسال فایل‌های رسانه‌ای
+      // ارسال فایل‌های رسانه‌ای به گروه ادمین
       if (userData.stickerFileId) {
-        await ctx.telegram.sendSticker(ADMIN_GROUP_ID, userData.stickerFileId);
+        await bot.telegram.sendSticker(ADMIN_GROUP_ID, userData.stickerFileId);
       }
       if (userData.tattooPhotoId) {
-        await ctx.telegram.sendPhoto(ADMIN_GROUP_ID, userData.tattooPhotoId);
+        await bot.telegram.sendPhoto(ADMIN_GROUP_ID, userData.tattooPhotoId);
       }
       if (userData.songFileId) {
-        await ctx.telegram.sendAudio(ADMIN_GROUP_ID, userData.songFileId);
+        await bot.telegram.sendAudio(ADMIN_GROUP_ID, userData.songFileId);
       }
       if (userData.coverPhotoId && userData.coverPhotoId.file_id) {
-        await ctx.telegram.sendPhoto(ADMIN_GROUP_ID, userData.coverPhotoId.file_id);
+        await bot.telegram.sendPhoto(ADMIN_GROUP_ID, userData.coverPhotoId.file_id);
       }
 
       await ctx.reply(
-        '✅ اطلاعات شما ثبت شد و به زودی در چنل شناسنامه ثبت خواهد شد ، به اکلیس خوش آمدید',
+        '✅ اطلاعات شما ثبت شد و به زودی در گروه شناسنامه ثبت خواهد شد ، به اکلیس خوش آمدید',
         Markup.removeKeyboard()
       );
 
@@ -287,8 +336,8 @@ bot.action(/approve_(\d+)/, async (ctx) => {
     const certificateNumber = generateCertificateNumber();
     saveApprovedUser(parseInt(userId), userData);
     
-    // ارسال به چنل با هشتگ
-    const channelMessage = 
+    // ارسال به گروه اصلی با هشتگ
+    const groupMessage = 
       `${certificateNumber}\n\n` +
       `👤 نام: 🪶 ${userData.firstName}\n` +
       `🆔 آیدی: @${userData.username}\n` +
@@ -297,31 +346,35 @@ bot.action(/approve_(\d+)/, async (ctx) => {
       `📅 تاریخ ثبت: ${userData.submitDate}\n` +
       `🏷️ شماره شناسنامه: ${certificateNumber}`;
 
-    // ارسال پیام به چنل
-    await ctx.telegram.sendMessage(CHANNEL_ID, channelMessage);
+    // ارسال پیام به گروه اصلی
+    const sentGroupMessage = await sendToGroup(TARGET_GROUP_ID, groupMessage);
     
-    // ارسال رسانه‌ها به چنل
-    if (userData.stickerFileId) {
-      await ctx.telegram.sendSticker(CHANNEL_ID, userData.stickerFileId);
-    }
-    if (userData.tattooPhotoId) {
-      await ctx.telegram.sendPhoto(CHANNEL_ID, userData.tattooPhotoId);
-    }
-    if (userData.songFileId) {
-      await ctx.telegram.sendAudio(CHANNEL_ID, userData.songFileId);
-    }
-    if (userData.coverPhotoId && userData.coverPhotoId.file_id) {
-      await ctx.telegram.sendPhoto(CHANNEL_ID, userData.coverPhotoId.file_id);
-    }
+    if (sentGroupMessage) {
+      // ارسال رسانه‌ها به گروه اصلی
+      if (userData.stickerFileId) {
+        await sendStickerToGroup(TARGET_GROUP_ID, userData.stickerFileId);
+      }
+      if (userData.tattooPhotoId) {
+        await sendPhotoToGroup(TARGET_GROUP_ID, userData.tattooPhotoId);
+      }
+      if (userData.songFileId) {
+        await sendAudioToGroup(TARGET_GROUP_ID, userData.songFileId);
+      }
+      if (userData.coverPhotoId && userData.coverPhotoId.file_id) {
+        await sendPhotoToGroup(TARGET_GROUP_ID, userData.coverPhotoId.file_id);
+      }
 
-    // پیام موفقیت به ادمین
-    const successMessage = 
-      `✅ کاربر با موفقیت تایید شد!\n\n` +
-      `👤 نام: ${userData.firstName}\n` +
-      `🆔 آیدی: @${userData.username}\n` +
-      `🏷️ شماره شناسنامه: ${certificateNumber}`;
-    
-    await ctx.reply(successMessage);
+      // پیام موفقیت به ادمین
+      const successMessage = 
+        `✅ کاربر با موفقیت تایید شد و به گروه ارسال شد!\n\n` +
+        `👤 نام: ${userData.firstName}\n` +
+        `🆔 آیدی: @${userData.username}\n` +
+        `🏷️ شماره شناسنامه: ${certificateNumber}`;
+      
+      await ctx.reply(successMessage);
+    } else {
+      await ctx.reply('❌ خطا در ارسال به گروه اصلی!');
+    }
     
     // پاک کردن session کاربر
     userSessions.delete(parseInt(userId));
@@ -343,9 +396,11 @@ bot.action(/reject_(\d+)/, async (ctx) => {
     const rejectMessage = 
       `❌ درخواست کاربر رد شد\n\n` +
       `👤 نام: ${userData?.firstName || 'نامشخص'}\n` +
-      `🆔 آیدی عددی: ${userId}`;
+      `🆔 آیدی عددی: ${userId}\n` +
+      `📅 تاریخ رد: ${new Date().toLocaleDateString('fa-IR')}`;
     
-    await ctx.telegram.sendMessage(ADMIN_GROUP_ID, rejectMessage);
+    // ارسال پیام رد به گروه ادمین
+    await sendToGroup(ADMIN_GROUP_ID, rejectMessage);
     
     // پاک کردن session کاربر
     userSessions.delete(parseInt(userId));
@@ -380,12 +435,33 @@ bot.command('status', async (ctx) => {
   }
 });
 
+// ✅ دستور برای تست اتصال به گروه
+bot.command('test_group', async (ctx) => {
+  try {
+    const testMessage = `🧪 تست اتصال به گروه\n⏰ زمان: ${new Date().toLocaleString('fa-IR')}`;
+    
+    const adminSuccess = await sendToGroup(ADMIN_GROUP_ID, testMessage);
+    const targetSuccess = await sendToGroup(TARGET_GROUP_ID, testMessage);
+    
+    await ctx.reply(
+      `نتایج تست:\n\n` +
+      `📋 گروه ادمین: ${adminSuccess ? '✅ موفق' : '❌ خطا'}\n` +
+      `📋 گروه اصلی: ${targetSuccess ? '✅ موفق' : '❌ خطا'}`
+    );
+    
+  } catch (error) {
+    console.error('Test group error:', error);
+    await ctx.reply('❌ خطا در تست گروه‌ها');
+  }
+});
+
 // ✅ هندلر کمک
 bot.help((ctx) => 
   ctx.reply(
     'دستورات موجود:\n' +
     '/start - شروع ثبت نام\n' +
     '/status - بررسی وضعیت شناسنامه\n' +
+    '/test_group - تست اتصال به گروه‌ها\n' +
     '/help - راهنمایی'
   )
 );
@@ -419,6 +495,8 @@ const startBot = async () => {
         res.json({ 
           status: 'Bot is running!', 
           approvedUsers: approvedUsers.size,
+          targetGroup: TARGET_GROUP_ID,
+          adminGroup: ADMIN_GROUP_ID,
           timestamp: new Date().toISOString() 
         });
       });
@@ -428,6 +506,8 @@ const startBot = async () => {
         console.log(`✅ Server is running on port ${PORT}`);
         console.log(`✅ Bot is running in webhook mode`);
         console.log(`✅ Approved users count: ${approvedUsers.size}`);
+        console.log(`✅ Target Group ID: ${TARGET_GROUP_ID}`);
+        console.log(`✅ Admin Group ID: ${ADMIN_GROUP_ID}`);
       });
       
     } else {

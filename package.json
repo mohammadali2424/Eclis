@@ -1,40 +1,28 @@
 {
-  "name": "eclis-registery-bot",
-  "version": "5.0.0",
-  "description": "Professional Telegram bot for Eclis character registration with complete database and beautiful user info display",
+  "name": "eclis-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for Eclis Darkness registration system",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "dev": "nodemon bot.js",
-    "test": "echo \"No tests specified\" && exit 0"
+    "dev": "nodemon bot.js"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
-    "express": "^4.18.2",
-    "dotenv": "^16.4.5"
+    "express": "^4.21.1"
   },
-  "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+  "devDependencies": {
+    "nodemon": "^3.0.2"
   },
   "keywords": [
     "telegram",
     "bot",
-    "eclis",
-    "registration",
-    "persian",
-    "character",
-    "database",
-    "mongodb"
+    "javascript",
+    "eclis"
   ],
-  "author": "Eclis Team",
+  "author": "Your Name",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/your-username/eclis-registery-bot.git"
-  },
-  "bugs": {
-    "url": "https://github.com/your-username/eclis-registery-bot/issues"
-  },
-  "homepage": "https://github.com/your-username/eclis-registery-bot#readme"
+  "engines": {
+    "node": ">=16.0.0"
+  }
 }

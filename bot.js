@@ -1,28 +1,24 @@
 const { Telegraf, Scenes, session, Markup } = require('telegraf');
-const { message } = require('telegraf/filters');
 
-// ✅ تنظیم توکن ربات از متغیر محیطی (برای امنیت بیشتر)
+// ✅ تنظیم توکن ربات از متغیر محیطی
 const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE';
-const CHANNEL_ID = process.env.CHANNEL_ID || -1001234567890; // آیدی عددی کانال/گروه مقصد
+const CHANNEL_ID = process.env.CHANNEL_ID || -1001234567890; // آیدی عددی کانال مقصد
 const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID || -1001234567891; // آیدی عددی گروه مدیریت
 
 // ✅ بررسی وجود توکن
 if (!BOT_TOKEN || BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
-  console.error('❌ خطا: BOT_TOKEN تنظیم نشده است.');
+  console.error('❌ Error: BOT_TOKEN is not set.');
   process.exit(1);
 }
 
-// ✅ ایجاد نمونه ربات
 const bot = new Telegraf(BOT_TOKEN);
+const userSessions = new Map(); // ذخیره موقت داده‌ها (در تولید از دیتابیس استفاده کنید)
 
-// ✅ ذخیره سازی موقت داده‌ها (در محیط تولید از دیتابیس استفاده کنید)
-const userSessions = new Map();
-
-// ✅ تعریف "صحنه" (Scene) برای جمع آوری اطلاعات کاربر
+// ✅ تعریف "صحنه" (Wizard Scene) برای جمع‌آوری اطلاعات
 const userInfoWizard = new Scenes.WizardScene(
   'user-info-wizard',
 
-  // گام اول: نمایش پیام خوش آمدگویی و درخواست ساخت شناسنامه
+  // Step 1: Start and show welcome message
   async (ctx) => {
     try {
       const welcomeName = ctx.from.first_name || 'کاربر';
@@ -35,9 +31,9 @@ const userInfoWizard = new Scenes.WizardScene(
       );
 
       await ctx.reply(
-        '+ خوش اومدین لطفا بشینید و اطلاعاتتون کامل کنید\n' +
-        'از توی کشو برگه‌ای رو بیرون میارم و به همراه خودکار جلوتون می‌ذارم\n\n' +
-        '+ حتما قبل از نوشتن فرم توضیحات چنل @Eclis_Darkness رو بخونید',
+        `+ خوش اومدین لطفا بشینید و اطلاعاتتون کامل کنید\n` +
+        `از توی کشو برگه‌ای رو بیرون میارم و به همراه خودکار جلوتون می‌ذارم\n\n` +
+        `+ حتما قبل از نوشتن فرم توضیحات چنل @Eclis_Darkness رو بخونید`,
         Markup.keyboard([['<< ساخت شناسنامه >>']]).resize()
       );
       return ctx.wizard.next();
@@ -48,7 +44,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
-  // گام دوم: دریافت درخواست ساخت شناسنامه و ارسال قالب فرم
+  // Step 2: Create form and show template
   async (ctx) => {
     if (!ctx.message?.text || !ctx.message.text.includes('ساخت شناسنامه')) {
       await ctx.reply('⚠️ لطفا فقط از دکمه "ساخت شناسنامه" استفاده کنید.');
@@ -76,7 +72,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
-  // گام سوم: دریافت اطلاعات تکمیلی کاربر
+  // Step 3: Get user's form data
   async (ctx) => {
     const userText = ctx.message?.text;
     if (!userText) {
@@ -85,16 +81,13 @@ const userInfoWizard = new Scenes.WizardScene(
     }
 
     try {
-      // ذخیره موقت داده‌ها
       if (!userSessions.has(ctx.from.id)) {
         userSessions.set(ctx.from.id, {});
       }
       const userData = userSessions.get(ctx.from.id);
       userData.profileText = userText;
 
-      await ctx.reply(
-        '+ خب لطفا ی استیکر متحرک از رولتون که مربعی باشه ، گوشه‌ هاش تیز باشه و صورت کرکتر کامل معلوم باشه بدین'
-      );
+      await ctx.reply('+ خب لطفا ی استیکر متحرک از رولتون که مربعی باشه ، گوشه‌ هاش تیز باشه و صورت کرکتر کامل معلوم باشه بدین');
       return ctx.wizard.next();
     } catch (error) {
       console.error('Error in step 3:', error);
@@ -103,7 +96,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
-  // گام چهارم: دریافت استیکر
+  // Step 4: Get sticker
   async (ctx) => {
     if (!ctx.message?.sticker) {
       await ctx.reply('⚠️ لطفا فقط استیکر ارسال کنید.');
@@ -123,7 +116,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
-  // گام پنجم: دریافت عکس اول
+  // Step 5: Get tattoo photo
   async (ctx) => {
     if (!ctx.message?.photo) {
       await ctx.reply('⚠️ لطفا فقط عکس ارسال کنید.');
@@ -143,7 +136,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
-  // گام ششم: دریافت آهنگ
+  // Step 6: Get song
   async (ctx) => {
     if (!ctx.message?.audio) {
       await ctx.reply('⚠️ لطفا فقط فایل آهنگ ارسال کنید.');
@@ -163,7 +156,7 @@ const userInfoWizard = new Scenes.WizardScene(
     }
   },
 
-  // گام هفتم: دریافت عکس دوم و نهایی‌سازی
+  // Step 7: Get cover photo and finalize
   async (ctx) => {
     if (!ctx.message?.photo) {
       await ctx.reply('⚠️ لطفا فقط عکس ارسال کنید.');
@@ -268,7 +261,7 @@ bot.action('reject_user', async (ctx) => {
   }
 });
 
-// ✅ هندلر شروع ربات
+// ✅ هندلر شروع
 bot.start(async (ctx) => {
   try {
     await ctx.scene.enter('user-info-wizard');
@@ -278,9 +271,6 @@ bot.start(async (ctx) => {
   }
 });
 
-// ✅ هندلر کمک
-bot.help((ctx) => ctx.reply('برای شروع دوباره از دستور /start استفاده کنید.'));
-
 // ✅ راه‌اندازی ربات با وب‌هوک (مخصوص Render)
 const startWebhook = async () => {
   try {
@@ -288,7 +278,6 @@ const startWebhook = async () => {
     await bot.telegram.setWebhook(WEBHOOK_URL);
     console.log('✅ Webhook setup successfully:', WEBHOOK_URL);
     
-    // شروع ربات در حالت وب‌هوک
     await bot.launch({
       webhook: {
         domain: WEBHOOK_URL,
@@ -306,7 +295,6 @@ const startWebhook = async () => {
 if (process.env.RENDER) {
   startWebhook();
 } else {
-  // حالت توسعه (polling)
   bot.launch().then(() => {
     console.log('✅ Bot is running in development mode (polling)');
   });

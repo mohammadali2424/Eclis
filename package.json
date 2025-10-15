@@ -4,10 +4,12 @@
   "description": "A sophisticated Telegram bot for Eclis Darkness community",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "dev": "node bot.js"
   },
   "dependencies": {
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "express": "^4.18.2"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -15,8 +17,9 @@
   "keywords": [
     "telegram",
     "bot",
-    "javascript"
+    "javascript",
+    "eclis"
   ],
-  "author": "Your Name",
+  "author": "Eclis Darkness",
   "license": "MIT"
 }

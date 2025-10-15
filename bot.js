@@ -1,306 +1,319 @@
-const { Telegraf, Markup, session } = require('telegraf');
-const express = require('express');
+const { Telegraf, Scenes, session, Markup } = require('telegraf');
+const { message } = require('telegraf/filters');
 
-// خواندن تنظیمات از متغیرهای محیطی
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const REVIEW_GROUP_ID = process.env.REVIEW_GROUP_ID;
-const ACCEPTED_GROUP_ID = process.env.ACCEPTED_GROUP_ID;
-const PORT = process.env.PORT || 3000;
+// ✅ تنظیم توکن ربات از متغیر محیطی (برای امنیت بیشتر)
+const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE';
+const CHANNEL_ID = process.env.CHANNEL_ID || -1001234567890; // آیدی عددی کانال/گروه مقصد
+const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID || -1001234567891; // آیدی عددی گروه مدیریت
 
-// بررسی وجود متغیرهای ضروری
-if (!BOT_TOKEN) {
-  console.error('❌ خطا: BOT_TOKEN تنظیم نشده است');
+// ✅ بررسی وجود توکن
+if (!BOT_TOKEN || BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
+  console.error('❌ خطا: BOT_TOKEN تنظیم نشده است.');
   process.exit(1);
 }
 
+// ✅ ایجاد نمونه ربات
 const bot = new Telegraf(BOT_TOKEN);
-const app = express();
 
-// middleware سشن
-bot.use(session({ 
-  defaultSession: () => ({
-    step: 'START',
-    userData: {}
-  })
-}));
+// ✅ ذخیره سازی موقت داده‌ها (در محیط تولید از دیتابیس استفاده کنید)
+const userSessions = new Map();
 
-// 🗂️ مراحل کاربر
-const UserStep = {
-    START: 'START',
-    AWAITING_FORM: 'AWAITING_FORM',
-    AWAITING_STICKER: 'AWAITING_STICKER',
-    AWAITING_TATTOO_PHOTO: 'AWAITING_TATTOO_PHOTO',
-    AWAITING_SONG: 'AWAITING_SONG',
-    AWAITING_COVER_PHOTO: 'AWAITING_COVER_PHOTO'
+// ✅ تعریف "صحنه" (Scene) برای جمع آوری اطلاعات کاربر
+const userInfoWizard = new Scenes.WizardScene(
+  'user-info-wizard',
+
+  // گام اول: نمایش پیام خوش آمدگویی و درخواست ساخت شناسنامه
+  async (ctx) => {
+    try {
+      const welcomeName = ctx.from.first_name || 'کاربر';
+      await ctx.reply(
+        `با ورودتون از جام بلند میشم و با لبخند گرمی بهتون نگاه میکنم دستامو بهم قفل میکنم *\n` +
+        `دست راستم رو خم شده با حالت خدمتکار ها روبه‌روی شکمم نگه میدارم *\n\n` +
+        `+ خوش اومدین (${welcomeName})\n` +
+        `من درویدم، دستیار شما توی سرزمین اکلیس\n\n` +
+        `برای شروع یکی از گزینه‌های زیر رو انتخاب کن:`
+      );
+
+      await ctx.reply(
+        '+ خوش اومدین لطفا بشینید و اطلاعاتتون کامل کنید\n' +
+        'از توی کشو برگه‌ای رو بیرون میارم و به همراه خودکار جلوتون می‌ذارم\n\n' +
+        '+ حتما قبل از نوشتن فرم توضیحات چنل @Eclis_Darkness رو بخونید',
+        Markup.keyboard([['<< ساخت شناسنامه >>']]).resize()
+      );
+      return ctx.wizard.next();
+    } catch (error) {
+      console.error('Error in step 1:', error);
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // گام دوم: دریافت درخواست ساخت شناسنامه و ارسال قالب فرم
+  async (ctx) => {
+    if (!ctx.message?.text || !ctx.message.text.includes('ساخت شناسنامه')) {
+      await ctx.reply('⚠️ لطفا فقط از دکمه "ساخت شناسنامه" استفاده کنید.');
+      return;
+    }
+
+    try {
+      const formTemplate = 
+        '🪶اسم و اسم خاندان:\n' +
+        '🪶نژاد:\n' +
+        '🪶تاریخ تولد به میلادی:\n' +
+        '🪶اسم پدر / مادر:';
+
+      await ctx.reply(
+        'بعد از اینکه فرمو پر کردین برگه رو ازتون میگیرم *',
+        Markup.removeKeyboard()
+      );
+
+      await ctx.reply(formTemplate);
+      return ctx.wizard.next();
+    } catch (error) {
+      console.error('Error in step 2:', error);
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // گام سوم: دریافت اطلاعات تکمیلی کاربر
+  async (ctx) => {
+    const userText = ctx.message?.text;
+    if (!userText) {
+      await ctx.reply('⚠️ لطفا اطلاعات خواسته شده را به صورت متن ارسال کنید.');
+      return;
+    }
+
+    try {
+      // ذخیره موقت داده‌ها
+      if (!userSessions.has(ctx.from.id)) {
+        userSessions.set(ctx.from.id, {});
+      }
+      const userData = userSessions.get(ctx.from.id);
+      userData.profileText = userText;
+
+      await ctx.reply(
+        '+ خب لطفا ی استیکر متحرک از رولتون که مربعی باشه ، گوشه‌ هاش تیز باشه و صورت کرکتر کامل معلوم باشه بدین'
+      );
+      return ctx.wizard.next();
+    } catch (error) {
+      console.error('Error in step 3:', error);
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // گام چهارم: دریافت استیکر
+  async (ctx) => {
+    if (!ctx.message?.sticker) {
+      await ctx.reply('⚠️ لطفا فقط استیکر ارسال کنید.');
+      return;
+    }
+
+    try {
+      const userData = userSessions.get(ctx.from.id);
+      userData.stickerFileId = ctx.message.sticker.file_id;
+
+      await ctx.reply('+ حالا عکس خالکوبی/شاخ/بال یا اژدهای رولتون رو بفرستید 📸');
+      return ctx.wizard.next();
+    } catch (error) {
+      console.error('Error in step 4:', error);
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // گام پنجم: دریافت عکس اول
+  async (ctx) => {
+    if (!ctx.message?.photo) {
+      await ctx.reply('⚠️ لطفا فقط عکس ارسال کنید.');
+      return;
+    }
+
+    try {
+      const userData = userSessions.get(ctx.from.id);
+      userData.tattooPhotoId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+
+      await ctx.reply('+ آهنگی که توصیف‌کننده شماست رو بفرستید 🎵');
+      return ctx.wizard.next();
+    } catch (error) {
+      console.error('Error in step 5:', error);
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // گام ششم: دریافت آهنگ
+  async (ctx) => {
+    if (!ctx.message?.audio) {
+      await ctx.reply('⚠️ لطفا فقط فایل آهنگ ارسال کنید.');
+      return;
+    }
+
+    try {
+      const userData = userSessions.get(ctx.from.id);
+      userData.songFileId = ctx.message.audio.file_id;
+
+      await ctx.reply('+ حالا یک عکس برای کاور آهنگ بفرستید 🎼');
+      return ctx.wizard.next();
+    } catch (error) {
+      console.error('Error in step 6:', error);
+      await ctx.reply('⚡ خطایی رخ داد. لطفا دوباره تلاش کنید.');
+      return ctx.scene.leave();
+    }
+  },
+
+  // گام هفتم: دریافت عکس دوم و نهایی‌سازی
+  async (ctx) => {
+    if (!ctx.message?.photo) {
+      await ctx.reply('⚠️ لطفا فقط عکس ارسال کنید.');
+      return;
+    }
+
+    try {
+      const userData = userSessions.get(ctx.from.id);
+      userData.coverPhotoId = ctx.message.photo[ctx.message.photo.length - 1];
+      userData.userId = ctx.from.id;
+      userData.username = ctx.from.username || 'ندارد';
+      userData.firstName = ctx.from.first_name || 'ندارد';
+      userData.submitDate = new Date().toLocaleDateString('fa-IR');
+
+      // ارسال اطلاعات به گروه مدیریت
+      const adminMessage = 
+        `👤 نام: 🪶 ${userData.firstName}\n` +
+        `🆔 آیدی: @${userData.username}\n` +
+        `📊 آیدی عددی: ${userData.userId}\n\n` +
+        `📋 اطلاعات ارسالی:\n${userData.profileText}\n\n` +
+        `📅 تاریخ ارسال: ${userData.submitDate}`;
+
+      const approveButtons = Markup.inlineKeyboard([
+        [Markup.button.callback('✅ قبول', 'approve_user')],
+        [Markup.button.callback('❌ رد', 'reject_user')]
+      ]);
+
+      await ctx.telegram.sendMessage(ADMIN_GROUP_ID, adminMessage, {
+        ...approveButtons,
+        parse_mode: 'HTML'
+      });
+
+      // ارسال فایل‌های رسانه‌ای به گروه مدیریت
+      if (userData.stickerFileId) {
+        await ctx.telegram.sendSticker(ADMIN_GROUP_ID, userData.stickerFileId);
+      }
+      if (userData.tattooPhotoId) {
+        await ctx.telegram.sendPhoto(ADMIN_GROUP_ID, userData.tattooPhotoId);
+      }
+      if (userData.songFileId) {
+        await ctx.telegram.sendAudio(ADMIN_GROUP_ID, userData.songFileId);
+      }
+      if (userData.coverPhotoId) {
+        await ctx.telegram.sendPhoto(ADMIN_GROUP_ID, userData.coverPhotoId.file_id);
+      }
+
+      await ctx.reply(
+        '✅ اطلاعات شما ثبت شد و به زودی در چنل شناسنامه ثبت خواهد شد ، به اکلیس خوش آمدید',
+        Markup.removeKeyboard()
+      );
+
+      userSessions.delete(ctx.from.id);
+      return ctx.scene.leave();
+    } catch (error) {
+      console.error('Error in step 7:', error);
+      await ctx.reply('⚡ خطایی در ثبت نهایی اطلاعات رخ داد. لطفا با پشتیبانی تماس بگیرید.');
+      return ctx.scene.leave();
+    }
+  }
+);
+
+// ✅ تنظیم stage برای مدیریت صحنه‌ها
+const stage = new Scenes.Stage([userInfoWizard]);
+bot.use(session());
+bot.use(stage.middleware());
+
+// ✅ هندلر دکمه‌های تایید/رد در گروه مدیریت
+bot.action('approve_user', async (ctx) => {
+  try {
+    await ctx.answerCbQuery('کاربر تایید شد ✅');
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    
+    const originalMessage = ctx.update.callback_query.message;
+    const successMessage = 
+      `🎉 کاربر جدید تایید شد!\n\n` +
+      `${originalMessage.text}\n\n` +
+      `وضعیت: ✅ تایید شده`;
+    
+    await ctx.telegram.sendMessage(CHANNEL_ID, successMessage);
+    
+  } catch (error) {
+    console.error('Error approving user:', error);
+    await ctx.answerCbQuery('خطا در تایید کاربر');
+  }
+});
+
+bot.action('reject_user', async (ctx) => {
+  try {
+    await ctx.answerCbQuery('کاربر رد شد ❌');
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    
+    const originalMessage = ctx.update.callback_query.message;
+    const rejectMessage = 
+      `❌ درخواست کاربر رد شد\n\n` +
+      `آیدی عددی: ${originalMessage.text.match(/آیدی عددی: (\d+)/)?.[1] || 'نامشخص'}`;
+    
+    await ctx.telegram.sendMessage(ADMIN_GROUP_ID, rejectMessage);
+    
+  } catch (error) {
+    console.error('Error rejecting user:', error);
+    await ctx.answerCbQuery('خطا در رد کاربر');
+  }
+});
+
+// ✅ هندلر شروع ربات
+bot.start(async (ctx) => {
+  try {
+    await ctx.scene.enter('user-info-wizard');
+  } catch (error) {
+    console.error('Error starting bot:', error);
+    await ctx.reply('⚡ خطایی در شروع ربات رخ داد. لطفا دوباره تلاش کنید.');
+  }
+});
+
+// ✅ هندلر کمک
+bot.help((ctx) => ctx.reply('برای شروع دوباره از دستور /start استفاده کنید.'));
+
+// ✅ راه‌اندازی ربات با وب‌هوک (مخصوص Render)
+const startWebhook = async () => {
+  try {
+    const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL + '/webhook';
+    await bot.telegram.setWebhook(WEBHOOK_URL);
+    console.log('✅ Webhook setup successfully:', WEBHOOK_URL);
+    
+    // شروع ربات در حالت وب‌هوک
+    await bot.launch({
+      webhook: {
+        domain: WEBHOOK_URL,
+        port: process.env.PORT || 3000,
+      }
+    });
+    console.log('✅ Bot is running in webhook mode');
+  } catch (error) {
+    console.error('❌ Error setting up webhook:', error);
+    process.exit(1);
+  }
 };
 
-// 🎯 دستور /start
-bot.start((ctx) => {
-    const userName = ctx.from.first_name || 'کاربر';
-    const welcomeMessage = `با ورودتون از جام بلند میشم و با لبخند گرمی بهتون نگاه میکنم دستامو بهم قفل میکنم *
-دست راستم رو خم شده با حالت خدمتکار ها روبه‌روی شکمم نگه میدارم *
-+ خوش اومدین (${userName})
-من درویدم، دستیار شما توی سرزمین اکلیس
-
-برای شروع یکی از گزینه‌های زیر رو انتخاب کن:`;
-
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('<< ساخت شناسنامه >>', 'create_id')]
-    ]);
-
-    ctx.session.step = UserStep.START;
-    ctx.session.userData = {};
-
-    return ctx.reply(welcomeMessage, keyboard);
-});
-
-// 🖱️ کلیک روی دکمه "ساخت شناسنامه"
-bot.action('create_id', (ctx) => {
-    ctx.session.step = UserStep.AWAITING_FORM;
-    ctx.session.userData = {};
-
-    const formInstructions = `+ خوش اومدین لطفا بشینید و اطلاعاتتون کامل کنید
-
-از توی کشو برگه‌ای رو بیرون میارم و به همراه خودکار جلوتون می‌ذارم *
-
-+ حتما قبل از نوشتن فرم توضیحات چنل @Eclis_Darkness رو بخونید`;
-
-    const formFields = `🪶اسم و اسم خاندان:
-🪶نژاد:
-🪶تاریخ تولد به میلادی:
-🪶اسم پدر / مادر:
-
-✅ لطفا متن بالا را کپی کنید، اطلاعات خود را در مقابل هر قسمت وارد کرده و سپس ارسال کنید.`;
-
-    ctx.editMessageText(formInstructions);
-    setTimeout(() => {
-        ctx.reply(formFields);
-    }, 500);
-});
-
-// 📝 دریافت متن فرم
-bot.on('text', (ctx) => {
-    const userSession = ctx.session;
-
-    if (userSession.step === UserStep.AWAITING_FORM) {
-        const userText = ctx.message.text;
-        
-        // بررسی ساده‌تر فرم
-        if (userText.includes('اسم و اسم خاندان:') && userText.includes('نژاد:')) {
-            
-            userSession.userData.formData = userText;
-            userSession.step = UserStep.AWAITING_STICKER;
-
-            const confirmationMessage = `بعد از اینکه فرمو پر کردین برگه رو ازتون میگیرم *
-
-+ خب لطفا یک استیکر از رولتون بفرستید`;
-
-            return ctx.reply(confirmationMessage);
-        } else {
-            return ctx.reply('⚠️ لطفا فرم را دقیقاً به همان شکل که ارائه شد کپی و پر کنید.');
-        }
-    }
-});
-
-// 🎞️ دریافت استیکر - بدون هیچ محدودیتی
-bot.on('sticker', (ctx) => {
-    const userSession = ctx.session;
-    const sticker = ctx.message.sticker;
-
-    if (userSession.step === UserStep.AWAITING_STICKER) {
-        // قبول هر نوع استیکری - بدون شرط
-        userSession.userData.stickerFileId = sticker.file_id;
-        userSession.userData.stickerEmoji = sticker.emoji || '❓';
-        userSession.step = UserStep.AWAITING_TATTOO_PHOTO;
-
-        return ctx.reply('✅ استیکر دریافت شد.
-
-+ حالا عکس خالکوبی/شاخ/بال یا اژدهای رولتون رو بفرستید 📸');
-    }
-});
-
-// 🖼️ دریافت عکس
-bot.on('photo', (ctx) => {
-    const userSession = ctx.session;
-
-    if (userSession.step === UserStep.AWAITING_TATTOO_PHOTO) {
-        userSession.userData.tattooPhotoFileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-        userSession.step = UserStep.AWAITING_SONG;
-
-        return ctx.reply('✅ عکس خالکوبی دریافت شد.
-
-+ آهنگی که توصیف‌کننده شماست رو بفرستید 🎵');
-    
-    } else if (userSession.step === UserStep.AWAITING_COVER_PHOTO) {
-        userSession.userData.coverPhotoFileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-        userSession.step = 'COMPLETED';
-
-        return finalizeApplication(ctx);
-    }
-});
-
-// 🎵 دریافت آهنگ
-bot.on('audio', (ctx) => {
-    const userSession = ctx.session;
-
-    if (userSession.step === UserStep.AWAITING_SONG) {
-        userSession.userData.audioFileId = ctx.message.audio.file_id;
-        userSession.userData.audioTitle = ctx.message.audio.title || 'بدون عنوان';
-        userSession.step = UserStep.AWAITING_COVER_PHOTO;
-
-        return ctx.reply('✅ آهنگ دریافت شد.
-
-+ حالا یک عکس برای کاور آهنگ بفرستید 🎼');
-    }
-});
-
-// 📤 تابع نهایی‌سازی
-async function finalizeApplication(ctx) {
-    const userSession = ctx.session;
-    const user = ctx.from;
-
-    try {
-        if (!REVIEW_GROUP_ID) {
-            throw new Error('REVIEW_GROUP_ID تنظیم نشده است');
-        }
-
-        const userDataMessage = `📬 **درخواست شناسنامه جدید**
-
-👤 **نام کاربر:** ${user.first_name || 'ندارد'} ${user.last_name || ''}
-📱 **آیدی:** @${user.username || 'ندارد'}
-🔢 **آیدی عددی:** ${user.id}
-
-📋 **اطلاعات ارسالی:**
-${userSession.userData.formData}
-
-🧪 **زیرکلاس:** نامشخص
-
-📥 **ارسال‌شده توسط:** ${user.first_name || 'کاربر'} (${user.id})`;
-
-        const reviewKeyboard = Markup.inlineKeyboard([
-            [Markup.button.callback('✅ قبول', `accept_${user.id}`), Markup.button.callback('❌ رد', `reject_${user.id}`)]
-        ]);
-
-        await ctx.telegram.sendMessage(REVIEW_GROUP_ID, userDataMessage, { 
-            ...reviewKeyboard,
-            parse_mode: 'Markdown'
-        });
-
-        // ارسال رسانه‌ها
-        if (userSession.userData.stickerFileId) {
-            await ctx.telegram.sendSticker(REVIEW_GROUP_ID, userSession.userData.stickerFileId, {
-                caption: '🎞 استیکر ارسالی کاربر'
-            });
-        }
-        
-        if (userSession.userData.tattooPhotoFileId) {
-            await ctx.telegram.sendPhoto(REVIEW_GROUP_ID, userSession.userData.tattooPhotoFileId, {
-                caption: '🖼 عکس خالکوبی/شاخ/بال'
-            });
-        }
-
-        if (userSession.userData.audioFileId) {
-            await ctx.telegram.sendAudio(REVIEW_GROUP_ID, userSession.userData.audioFileId, {
-                title: userSession.userData.audioTitle,
-                caption: '🎵 آهنگ انتخابی کاربر'
-            });
-        }
-        
-        if (userSession.userData.coverPhotoFileId) {
-            await ctx.telegram.sendPhoto(REVIEW_GROUP_ID, userSession.userData.coverPhotoFileId, {
-                caption: '🎼 کاور آهنگ'
-            });
-        }
-
-        await ctx.reply(`✅ اطلاعات شما ثبت شد و به زودی در چنل شناسنامه ثبت خواهد شد ، به اکلیس خوش آمدید
-
-📝 **مراحل تکمیل شده:**
-✓ پر کردن فرم
-✓ ارسال استیکر
-✓ ارسال عکس خالکوبی
-✓ ارسال آهنگ
-✓ ارسال کاور آهنگ`);
-
-        // ریست سشن
-        ctx.session.step = UserStep.START;
-        ctx.session.userData = {};
-
-    } catch (error) {
-        console.error('خطا در ارسال به گروه بررسی:', error);
-        await ctx.reply('❌ مشکلی در ثبت اطلاعات پیش آمد. لطفاً بعداً مجدداً تلاش کنید.');
-    }
+// ✅ شروع برنامه
+if (process.env.RENDER) {
+  startWebhook();
+} else {
+  // حالت توسعه (polling)
+  bot.launch().then(() => {
+    console.log('✅ Bot is running in development mode (polling)');
+  });
 }
 
-// ✅❌ مدیریت تصمیم ادمین
-bot.action(/accept_(\d+)/, async (ctx) => {
-    const targetUserId = ctx.match[1];
-    const adminUser = ctx.callbackQuery.from;
-
-    try {
-        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n--- ✅ **تایید شده** ---');
-
-        await ctx.telegram.sendMessage(targetUserId, `🎉 **درخواست شناسنامه شما تایید شد!**
-
-به خانواده اکلیس خوش آمدید.
-
-امیدواریم لحظات خوبی را در سرزمین ما سپری کنید.`);
-
-        if (ACCEPTED_GROUP_ID) {
-            const acceptedMessage = `🎊 **کاربر جدید تایید شد**
-
-👤 نام: ${adminUser.first_name || 'ندارد'}
-🆔 آیدی عددی: ${adminUser.id}
-📧 آیدی کاربری: @${adminUser.username || 'ندارد'}
-
-✅ کاربر با موفقیت به جامعه اکلیس پیوست.`;
-            
-            await ctx.telegram.sendMessage(ACCEPTED_GROUP_ID, acceptedMessage);
-        }
-
-        await ctx.answerCbQuery('کاربر تایید شد.');
-
-    } catch (error) {
-        console.error('خطا در پردازش تایید:', error);
-        await ctx.answerCbQuery('خطا در پردازش');
-    }
-});
-
-bot.action(/reject_(\d+)/, async (ctx) => {
-    const targetUserId = ctx.match[1];
-
-    try {
-        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n--- ❌ **رد شده** ---');
-
-        await ctx.telegram.sendMessage(targetUserId, `❌ **متاسفانه درخواست شناسنامه شما رد شد.**
-
-در صورت نیاز به اطلاعات بیشتر با پشتیبانی تماس بگیرید.`);
-        
-        await ctx.answerCbQuery('کاربر رد شد.');
-
-    } catch (error) {
-        console.error('خطا در پردازش رد:', error);
-        await ctx.answerCbQuery('خطا در پردازش');
-    }
-});
-
-// راه‌اندازی ربات تلگرام
-bot.launch().then(() => {
-    console.log('✅ ربات تلگرام راه‌اندازی شد');
-}).catch((err) => {
-    console.error('خطا در راه‌اندازی ربات:', err);
-});
-
-// راه‌اندازی سرور اکسپرس برای Render
-app.get('/', (req, res) => {
-  res.send('ربات اکلیس در حال اجراست!');
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ سرور روی پورت ${PORT} در حال اجراست`);
-});
-
-// مدیریت خاموشی
+// ✅ مدیریت خروج تمیز
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+module.exports = bot;

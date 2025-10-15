@@ -2,8 +2,8 @@ const { Telegraf, Scenes, session, Markup } = require('telegraf');
 
 // ✅ تنظیم توکن ربات از متغیر محیطی
 const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE';
-const CHANNEL_ID = process.env.CHANNEL_ID || -1001234567890;
-const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID || -1001234567891;
+const CHANNEL_ID = process.env.CHANNEL_ID || '-1001234567890';
+const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID || '-1001234567891';
 
 // ✅ بررسی وجود توکن
 if (!BOT_TOKEN || BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
@@ -13,9 +13,6 @@ if (!BOT_TOKEN || BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
 
 const bot = new Telegraf(BOT_TOKEN);
 const userSessions = new Map();
-
-// ✅ تابع تاخیر با قابلیت retry
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ✅ تعریف صحنه برای جمع‌آوری اطلاعات
 const userInfoWizard = new Scenes.WizardScene(
@@ -27,17 +24,17 @@ const userInfoWizard = new Scenes.WizardScene(
       const welcomeName = ctx.from.first_name || 'کاربر';
       
       await ctx.reply(
-        `با ورودتون از جام بلند میشم و با لبخند گرمی بهتون نگاه میکنم دستامو بهم قفل میکنم *\n` +
-        `دست راستم رو خم شده با حالت خدمتکار ها روبه‌روی شکمم نگه میدارم *\n\n` +
+        'با ورودتون از جام بلند میشم و با لبخند گرمی بهتون نگاه میکنم دستامو بهم قفل میکنم *\n' +
+        'دست راستم رو خم شده با حالت خدمتکار ها روبه‌روی شکمم نگه میدارم *\n\n' +
         `+ خوش اومدین (${welcomeName})\n` +
-        `من درویدم، دستیار شما توی سرزمین اکلیس\n\n` +
-        `برای شروع یکی از گزینه‌های زیر رو انتخاب کن:`
+        'من درویدم، دستیار شما توی سرزمین اکلیس\n\n' +
+        'برای شروع یکی از گزینه‌های زیر رو انتخاب کن:'
       );
 
       await ctx.reply(
-        `+ خوش اومدین لطفا بشینید و اطلاعاتتون کامل کنید\n` +
-        `از توی کشو برگه‌ای رو بیرون میارم و به همراه خودکار جلوتون می‌ذارم\n\n` +
-        `+ حتما قبل از نوشتن فرم توضیحات چنل @Eclis_Darkness رو بخونید`,
+        '+ خوش اومدین لطفا بشینید و اطلاعاتتون کامل کنید\n' +
+        'از توی کشو برگه‌ای رو بیرون میارم و به همراه خودکار جلوتون می‌ذارم\n\n' +
+        '+ حتما قبل از نوشتن فرم توضیحات چنل @Eclis_Darkness رو بخونید',
         Markup.keyboard([['<< ساخت شناسنامه >>']]).resize()
       );
       
@@ -189,42 +186,20 @@ const userInfoWizard = new Scenes.WizardScene(
         [Markup.button.callback('❌ رد', 'reject_user')]
       ]);
 
-      // ارسال پیام به گروه مدیریت با retry
-      let retryCount = 0;
-      const maxRetries = 3;
-      
-      while (retryCount < maxRetries) {
-        try {
-          await ctx.telegram.sendMessage(ADMIN_GROUP_ID, adminMessage, {
-            ...approveButtons,
-            parse_mode: 'HTML'
-          });
-          break;
-        } catch (error) {
-          retryCount++;
-          if (retryCount === maxRetries) throw error;
-          console.log(`Retry ${retryCount} for sending admin message...`);
-          await delay(2000);
-        }
-      }
+      await ctx.telegram.sendMessage(ADMIN_GROUP_ID, adminMessage, approveButtons);
 
       // ارسال فایل‌های رسانه‌ای
-      const mediaFiles = [
-        { type: 'sticker', id: userData.stickerFileId, method: 'sendSticker' },
-        { type: 'photo', id: userData.tattooPhotoId, method: 'sendPhoto' },
-        { type: 'audio', id: userData.songFileId, method: 'sendAudio' },
-        { type: 'photo', id: userData.coverPhotoId.file_id, method: 'sendPhoto' }
-      ];
-
-      for (const media of mediaFiles) {
-        if (media.id) {
-          try {
-            await ctx.telegram[media.method](ADMIN_GROUP_ID, media.id);
-            await delay(1000); // تاخیر بین ارسال فایل‌ها
-          } catch (error) {
-            console.error(`Error sending ${media.type}:`, error);
-          }
-        }
+      if (userData.stickerFileId) {
+        await ctx.telegram.sendSticker(ADMIN_GROUP_ID, userData.stickerFileId);
+      }
+      if (userData.tattooPhotoId) {
+        await ctx.telegram.sendPhoto(ADMIN_GROUP_ID, userData.tattooPhotoId);
+      }
+      if (userData.songFileId) {
+        await ctx.telegram.sendAudio(ADMIN_GROUP_ID, userData.songFileId);
+      }
+      if (userData.coverPhotoId && userData.coverPhotoId.file_id) {
+        await ctx.telegram.sendPhoto(ADMIN_GROUP_ID, userData.coverPhotoId.file_id);
       }
 
       await ctx.reply(
@@ -301,70 +276,56 @@ bot.start(async (ctx) => {
 // ✅ هندلر کمک
 bot.help((ctx) => ctx.reply('برای شروع دوباره از دستور /start استفاده کنید.'));
 
-// ✅ تابع راه‌اندازی وب‌هوک با قابلیت retry
-const startWebhookWithRetry = async (retryCount = 0) => {
-  const maxRetries = 5;
-  const baseDelay = 2000; // 2 seconds
-  
+// ✅ تابع راه‌اندازی ساده و مطمئن
+const startBot = async () => {
   try {
-    const WEBHOOK_DOMAIN = process.env.RENDER_EXTERNAL_URL;
-    if (!WEBHOOK_DOMAIN) {
-      throw new Error('RENDER_EXTERNAL_URL is not set');
-    }
-    
-    const WEBHOOK_URL = `${WEBHOOK_DOMAIN}/webhook`;
-    
-    console.log(`🔄 Setting up webhook (attempt ${retryCount + 1})...`);
-    
-    // حذف وب‌هوک قبلی برای جلوگیری از تداخل
-    await bot.telegram.deleteWebhook();
-    await delay(1000);
-    
-    // تنظیم وب‌هوک جدید
-    await bot.telegram.setWebhook(WEBHOOK_URL);
-    console.log('✅ Webhook setup successfully:', WEBHOOK_URL);
-    
-    // راه‌اندازی ربات در حالت وب‌هوک
-    await bot.launch({
-      webhook: {
-        port: process.env.PORT || 3000,
-      }
-    });
-    
-    console.log('✅ Bot is running in webhook mode');
-  } catch (error) {
-    console.error(`❌ Webhook setup failed (attempt ${retryCount + 1}):`, error.message);
-    
-    if (retryCount < maxRetries - 1) {
-      const waitTime = baseDelay * Math.pow(2, retryCount);
-      console.log(`⏳ Retrying in ${waitTime/1000} seconds...`);
-      await delay(waitTime);
-      return startWebhookWithRetry(retryCount + 1);
-    } else {
-      console.error('❌ All webhook setup attempts failed. Switching to polling mode...');
+    // اگر روی Render هستیم، از وب‌هوک استفاده می‌کنیم
+    if (process.env.RENDER) {
+      const WEBHOOK_DOMAIN = process.env.RENDER_EXTERNAL_URL;
       
-      // در صورت شکست وب‌هوک، به حالت polling سوییچ می‌کنیم
-      try {
-        await bot.launch();
-        console.log('✅ Bot is running in polling mode (fallback)');
-      } catch (pollingError) {
-        console.error('❌ Polling mode also failed:', pollingError);
-        process.exit(1);
+      if (WEBHOOK_DOMAIN) {
+        console.log('🚀 Starting bot in webhook mode...');
+        const WEBHOOK_URL = `${WEBHOOK_DOMAIN}/webhook`;
+        
+        // تنظیم وب‌هوک
+        await bot.telegram.setWebhook(WEBHOOK_URL);
+        console.log('✅ Webhook set successfully');
+        
+        // راه‌اندازی ربات
+        bot.launch({
+          webhook: {
+            port: process.env.PORT || 3000,
+            host: '0.0.0.0' // این خط بسیار مهم است
+          }
+        });
+        
+        console.log('✅ Bot is running in webhook mode');
+      } else {
+        throw new Error('RENDER_EXTERNAL_URL is not set');
       }
+    } else {
+      // حالت توسعه
+      console.log('🔧 Starting bot in polling mode...');
+      await bot.launch();
+      console.log('✅ Bot is running in polling mode');
+    }
+  } catch (error) {
+    console.error('❌ Error starting bot:', error);
+    
+    // در صورت شکست وب‌هوک، به حالت polling سوییچ می‌کنیم
+    console.log('🔄 Switching to polling mode...');
+    try {
+      await bot.launch();
+      console.log('✅ Bot is running in polling mode (fallback)');
+    } catch (pollingError) {
+      console.error('❌ Polling mode also failed:', pollingError);
+      process.exit(1);
     }
   }
 };
 
-// ✅ شروع برنامه
-if (process.env.RENDER) {
-  console.log('🚀 Starting bot in webhook mode for Render...');
-  startWebhookWithRetry();
-} else {
-  console.log('🔧 Starting bot in development mode (polling)...');
-  bot.launch().then(() => {
-    console.log('✅ Bot is running in development mode (polling)');
-  });
-}
+// ✅ شروع ربات
+startBot();
 
 // ✅ مدیریت graceful shutdown
 process.once('SIGINT', () => {
@@ -376,5 +337,3 @@ process.once('SIGTERM', () => {
   console.log('🛑 Shutting down gracefully...');
   bot.stop('SIGTERM');
 });
-
-module.exports = bot;

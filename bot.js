@@ -1,17 +1,28 @@
 const { Telegraf, Scenes, session, Markup } = require('telegraf');
+const express = require('express');
 
 // ✅ تنظیم توکن ربات از متغیر محیطی
-const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE';
-const CHANNEL_ID = process.env.CHANNEL_ID || '-1001234567890';
-const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID || '-1001234567891';
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID;
 
-// ✅ بررسی وجود توکن
-if (!BOT_TOKEN || BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
+// ✅ بررسی وجود توکن‌های ضروری
+if (!BOT_TOKEN) {
   console.error('❌ Error: BOT_TOKEN is not set.');
   process.exit(1);
 }
 
+if (!CHANNEL_ID || !ADMIN_GROUP_ID) {
+  console.error('❌ Error: CHANNEL_ID or ADMIN_GROUP_ID is not set.');
+  process.exit(1);
+}
+
 const bot = new Telegraf(BOT_TOKEN);
+const app = express();
+
+// middleware برای parse کردن JSON
+app.use(express.json());
+
 const userSessions = new Map();
 
 // ✅ تعریف صحنه برای جمع‌آوری اطلاعات
@@ -276,51 +287,50 @@ bot.start(async (ctx) => {
 // ✅ هندلر کمک
 bot.help((ctx) => ctx.reply('برای شروع دوباره از دستور /start استفاده کنید.'));
 
-// ✅ تابع راه‌اندازی ساده و مطمئن
+// ✅ راه‌اندازی ربات برای Render
 const startBot = async () => {
   try {
-    // اگر روی Render هستیم، از وب‌هوک استفاده می‌کنیم
+    const PORT = process.env.PORT || 3000;
+    
     if (process.env.RENDER) {
-      const WEBHOOK_DOMAIN = process.env.RENDER_EXTERNAL_URL;
+      // حالت Production - استفاده از Webhook
+      console.log('🚀 Starting bot in webhook mode...');
       
-      if (WEBHOOK_DOMAIN) {
-        console.log('🚀 Starting bot in webhook mode...');
-        const WEBHOOK_URL = `${WEBHOOK_DOMAIN}/webhook`;
-        
-        // تنظیم وب‌هوک
-        await bot.telegram.setWebhook(WEBHOOK_URL);
-        console.log('✅ Webhook set successfully');
-        
-        // راه‌اندازی ربات
-        bot.launch({
-          webhook: {
-            port: process.env.PORT || 3000,
-            host: '0.0.0.0' // این خط بسیار مهم است
-          }
-        });
-        
-        console.log('✅ Bot is running in webhook mode');
-      } else {
+      const WEBHOOK_DOMAIN = process.env.RENDER_EXTERNAL_URL;
+      if (!WEBHOOK_DOMAIN) {
         throw new Error('RENDER_EXTERNAL_URL is not set');
       }
+      
+      const WEBHOOK_PATH = `/webhook`;
+      const WEBHOOK_URL = `${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`;
+      
+      // تنظیم webhook
+      await bot.telegram.setWebhook(WEBHOOK_URL);
+      console.log(`✅ Webhook set to: ${WEBHOOK_URL}`);
+      
+      // تنظیم middleware برای Telegraf
+      app.use(bot.webhookCallback(WEBHOOK_PATH));
+      
+      // Route اصلی برای سلامت سرویس
+      app.get('/', (req, res) => {
+        res.json({ status: 'Bot is running!', timestamp: new Date().toISOString() });
+      });
+      
+      // راه‌اندازی سرور
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`✅ Server is running on port ${PORT}`);
+        console.log(`✅ Bot is running in webhook mode`);
+      });
+      
     } else {
-      // حالت توسعه
+      // حالت Development - استفاده از Polling
       console.log('🔧 Starting bot in polling mode...');
       await bot.launch();
       console.log('✅ Bot is running in polling mode');
     }
   } catch (error) {
     console.error('❌ Error starting bot:', error);
-    
-    // در صورت شکست وب‌هوک، به حالت polling سوییچ می‌کنیم
-    console.log('🔄 Switching to polling mode...');
-    try {
-      await bot.launch();
-      console.log('✅ Bot is running in polling mode (fallback)');
-    } catch (pollingError) {
-      console.error('❌ Polling mode also failed:', pollingError);
-      process.exit(1);
-    }
+    process.exit(1);
   }
 };
 

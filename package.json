@@ -1,28 +1,25 @@
 {
   "name": "eclis-telegram-bot",
   "version": "1.0.0",
-  "description": "Telegram bot for Eclis Darkness registration system",
+  "description": "A sophisticated Telegram bot for Eclis Darkness community with user profiling system",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js"
   },
   "dependencies": {
-    "telegraf": "^4.16.3",
-    "express": "^4.21.1"
+    "telegraf": "^4.16.3"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [
     "telegram",
-    "bot",
+    "bot", 
     "javascript",
-    "eclis"
+    "eclis",
+    "telegraf"
   ],
   "author": "Your Name",
-  "license": "MIT",
-  "engines": {
-    "node": ">=16.0.0"
-  }
+  "license": "MIT"
 }
